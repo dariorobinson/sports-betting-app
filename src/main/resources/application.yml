@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: kalshi-sports-betting
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+  http:
+    client:
+      # Generous enough to survive a cold JVM's first HTTPS call (TLS/HTTP2 negotiation, JIT
+      # warmup) without tripping — steady-state calls to Kalshi finish in well under a second.
+      connect-timeout: ${KALSHI_CONNECT_TIMEOUT:10s}
+      read-timeout: ${KALSHI_READ_TIMEOUT:30s}
+
+server:
+  port: ${PORT:8080}
+  # Deployed environments should keep this on loopback and let only a co-located process (e.g. a
+  # Discord listener on the same host) call in; set SERVER_ADDRESS=0.0.0.0 only behind your own
+  # reverse proxy / security group rules.
+  address: ${SERVER_ADDRESS:127.0.0.1}
+
+app:
+  # Optional shared-secret header required on /api/** (except /api/status) — defense-in-depth on
+  # top of the loopback binding above, in case that binding is ever loosened. Unset = disabled.
+  api-key: ${APP_API_KEY:}
+
+kalshi:
+  # Production: https://api.elections.kalshi.com/trade-api/v2
+  # Demo:       https://demo-api.kalshi.co/trade-api/v2
+  base-url: ${KALSHI_BASE_URL:https://api.elections.kalshi.com/trade-api/v2}
+  api-key-id: ${KALSHI_API_KEY_ID:}
+  private-key-pem: ${KALSHI_PRIVATE_KEY_PEM:}
+  private-key-path: ${KALSHI_PRIVATE_KEY_PATH:}
+
+logging:
+  level:
+    com.kalshi.betting: INFO

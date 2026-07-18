@@ -1,0 +1,21 @@
+[Unit]
+Description=Kalshi Sports Betting App
+After=network.target
+
+[Service]
+Type=simple
+User=kalshi
+Group=kalshi
+WorkingDirectory=/opt/kalshi-sports-betting
+EnvironmentFile=/etc/kalshi-sports-betting/kalshi.env
+ExecStart=/usr/bin/java -jar /opt/kalshi-sports-betting/app.jar
+Restart=on-failure
+RestartSec=5
+# Hardening: this process is stateless (no persistence, logs go to the journal) — it only ever
+# needs read access to its jar/key and outbound network, never write access anywhere.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
