@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://repo1.maven.org/maven2/org/springframework/ai/spring-ai-starter-mcp-server-webmvc/2.0.0/spring-ai-starter-mcp-server-webmvc-2.0.0.pom\")",
+      "Bash(curl -s \"https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-starter-parent/maven-metadata.xml\")",
+      "Bash(curl -s \"https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-dependencies/4.1.0/spring-boot-dependencies-4.1.0.pom\" -o /tmp/boot-deps.pom)",
+      "Read(//tmp/**)",
+      "Bash(curl -s \"https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-starter-json/4.1.0/spring-boot-starter-json-4.1.0.pom\")",
+      "Bash(curl -s \"https://repo1.maven.org/maven2/org/springframework/ai/spring-ai-mcp-annotations/2.0.0/spring-ai-mcp-annotations-2.0.0.pom\")",
+      "Bash(curl -s -o mcp-annotations-2.jar \"https://repo1.maven.org/maven2/org/springframework/ai/spring-ai-mcp-annotations/2.0.0/spring-ai-mcp-annotations-2.0.0.jar\")",
+      "Bash(unzip -l mcp-annotations-2.jar)",
+      "Bash(grep -v '\\\\$')",
+      "Bash(pkill -f kalshi-sports-betting)",
+      "Bash(sleep 1)",
+      "Bash(export JAVA_HOME=/usr/local/opt/openjdk)",
+      "Bash(./mvnw -q -DskipTests clean package)",
+      "Bash(echo \"BUILD_EXIT:$?\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:org.springframework.boot&rows=20&wt=json\")",
+      "Bash(python3 -c ' *)",
+      "Bash(curl -s -o autoconf-boot.jar \"https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-autoconfigure/4.1.0/spring-boot-autoconfigure-4.1.0.jar\")",
+      "Bash(unzip -l autoconf-boot.jar)",
+      "Bash(curl -s -o restclient.jar \"https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-restclient/4.1.0/spring-boot-restclient-4.1.0.jar\")",
+      "Bash(unzip -l restclient.jar)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-starter-restclient/4.1.0/spring-boot-starter-restclient-4.1.0.pom\")",
+      "Bash(time curl -s http://localhost:8080/api/combos -o /tmp/combos2.json)",
+      "Bash(curl -s http://localhost:8080/api/portfolio/balance)",
+      "Bash(curl -s -X POST http://localhost:8080/api/bets -H \"Content-Type: application/json\" -d '{\"ticker\":\"\",\"outcome\":\"MAYBE\",\"price\":5,\"count\":0}')",
+      "Bash(rm -rf /tmp/*.jar /tmp/extracted2 2>/dev/null *)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

@@ -143,6 +143,50 @@ isn't something this Java app can invoke on its own. The workflow is: an agent p
 here, estimates each leg's probability, picks promising combinations, and calls the `/price`
 endpoint to see Kalshi's actual price for the ones worth surfacing.
 
+## MCP server (for AI agents)
+
+Alongside the REST API, this app exposes the same capabilities as **MCP tools** via
+[Spring AI](https://docs.spring.io/spring-ai/reference/) — so any MCP-compatible agent (Claude
+Code, Claude Desktop, etc.) can discover and call them directly with structured schemas, instead
+of an agent having to curl raw REST endpoints.
+
+- **Endpoint**: `POST http://localhost:8080/mcp` (streamable-http transport)
+- **Auth**: same `X-App-Api-Key` header as the REST API, if `APP_API_KEY` is set — required for
+  MCP clients too, since these tools include `place_bet`.
+- **12 tools registered** at startup (check the log line `Registered tools: 12` to confirm):
+  `list_sports`, `list_games`, `get_game`, `get_market_orderbook`, `get_balance`, `get_positions`,
+  `list_my_orders`, `place_bet`, `cancel_bet`, `list_sports_combos`, `get_combo_legs`, `price_combo`.
+
+Connect an MCP client to it — for Claude Code, add an entry along these lines (exact syntax may
+vary by version; check `claude mcp add --help`):
+```json
+{
+  "mcpServers": {
+    "kalshi-sports-betting": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp",
+      "headers": { "X-App-Api-Key": "your-app-api-key-if-set" }
+    }
+  }
+}
+```
+
+Tool implementations live in `mcp/` and are thin adapters over the same `service/` layer the REST
+controllers use — no business logic is duplicated between the two. One inconsistency worth
+knowing: MCP tool results serialize in **camelCase** (Spring AI's own internal Jackson pathway),
+while the REST API uses **snake_case** (this app's configured Jackson naming strategy) — cosmetic
+only, doesn't affect either working correctly.
+
+Runs on **Spring Boot 4.1.0** + **Spring AI 2.0.0**. Two things worth knowing if you touch these
+versions again:
+- Boot 4 split `RestClient`/`RestClientAutoConfiguration` out of `spring-boot-starter-web` into
+  its own module — `spring-boot-starter-restclient` is required explicitly, or the
+  `RestClient.Builder` bean (and with it, correct snake_case JSON parsing from Kalshi) won't exist.
+- Spring AI's MCP annotations moved package between versions: `org.springaicommunity.mcp.annotation.*`
+  (1.1.x, paired with Boot 3.5.x) → `org.springframework.ai.mcp.annotation.*` (2.0.0+, paired with
+  Boot 4.x). Keep the Boot major version and Spring AI line matched — check each dependency's own
+  POM for what Boot version it actually targets before bumping either one.
+
 ## Project layout
 
 ```
@@ -151,14 +195,15 @@ auth/       RSA-PSS request signing
 client/     Low-level typed Kalshi API client + DTOs mirroring openapi.yaml
 service/    Sports catalog browsing, bet placement/translation, portfolio, combo pricing
 web/        This app's own REST API + DTOs
+mcp/        MCP tool adapters over the service/ layer, for AI agent access
 ```
 
 ## Notes / limitations
 
 - Covers sports market discovery (series → events/games → markets), order books, placing/
   cancelling limit orders (Kalshi's V2 order endpoint), balance, positions, and browsing/pricing
-  combo (multivariate event) markets — not the full Kalshi API surface (RFQs, subaccounts, FCM,
-  block trades, etc.).
+  combo (multivariate event) markets — exposed both as a REST API and as MCP tools for AI agents
+  — not the full Kalshi API surface (RFQs, subaccounts, FCM, block trades, etc.).
 - Uses the V2 order endpoints (`/portfolio/events/orders`) since the legacy `/portfolio/orders`
   endpoints are being phased out per Kalshi's own spec.
 - No persistence/database — it's a thin, stateless pass-through to Kalshi.

@@ -10,6 +10,17 @@ spring:
       # warmup) without tripping — steady-state calls to Kalshi finish in well under a second.
       connect-timeout: ${KALSHI_CONNECT_TIMEOUT:10s}
       read-timeout: ${KALSHI_READ_TIMEOUT:30s}
+  ai:
+    mcp:
+      server:
+        name: kalshi-sports-betting-mcp
+        version: 1.0.0
+        protocol: STREAMABLE
+        type: SYNC
+        instructions: >-
+          Tools for browsing Kalshi sports markets, checking portfolio/balance, placing and
+          cancelling bets, and pricing combo (multivariate event) markets. Prices are dollar
+          strings like "0.5500" (55 cents); YES/NO outcome prices always sum to $1.00.
 
 server:
   port: ${PORT:8080}
