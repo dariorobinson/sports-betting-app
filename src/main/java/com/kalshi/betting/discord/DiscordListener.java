@@ -23,7 +23,6 @@ import java.util.concurrent.Executors;
 public class DiscordListener extends ListenerAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(DiscordListener.class);
-    private static final int DISCORD_MESSAGE_LIMIT = 2000;
 
     private final OrchestratorService orchestratorService;
     private final String authorizedUserId;
@@ -60,21 +59,11 @@ public class DiscordListener extends ListenerAdapter {
                 if (response == null || response.isEmpty()) {
                     response = "I couldn't generate a response. Please try again.";
                 }
-                sendChunked(channel, response);
+                DiscordMessages.sendChunked(channel, response);
             } catch (Exception e) {
                 log.error("[{}] Error processing Discord message: {}", userId, e.getMessage(), e);
                 channel.sendMessage("An error occurred: " + e.getMessage()).queue();
             }
         });
-    }
-
-    private void sendChunked(MessageChannel channel, String response) {
-        if (response.length() <= DISCORD_MESSAGE_LIMIT) {
-            channel.sendMessage(response).queue();
-            return;
-        }
-        for (int i = 0; i < response.length(); i += DISCORD_MESSAGE_LIMIT) {
-            channel.sendMessage(response.substring(i, Math.min(i + DISCORD_MESSAGE_LIMIT, response.length()))).queue();
-        }
     }
 }
