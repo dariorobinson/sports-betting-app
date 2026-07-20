@@ -1,0 +1,15 @@
+# Copy this to application.properties (same directory) and fill in real values, then run the
+# app from this directory (./mvnw spring-boot:run, or `java -jar target/*.jar` from here) — Spring
+# Boot automatically loads ./application.properties from the working directory, overriding the
+# defaults packaged in src/main/resources/application.yml. application.properties is gitignored;
+# never commit the filled-in version.
+
+kalshi.api-key-id=your-kalshi-api-key-id
+kalshi.private-key-path=/full/path/to/kalshi_private_key_pkcs8.pem
+kalshi.base-url=https://demo-api.kalshi.co/trade-api/v2
+
+app.api-key=generate-a-long-random-value-here
+
+discord.bot.token=your-discord-bot-token
+discord.authorized-user-id=your-discord-user-id
+anthropic.api.key=your-anthropic-api-key

@@ -5,3 +5,7 @@ target/
 *.iml
 .vscode/
 .claude/settings.local.json
+
+# Real credentials go here (Spring Boot auto-loads this from the working directory, overriding
+# src/main/resources/application.yml) — never commit it. See application.properties.example.
+application.properties
