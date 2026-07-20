@@ -1,6 +1,7 @@
 package com.kalshi.betting.orchestrator.tool;
 
 import com.fasterxml.jackson.annotation.JsonClassDescription;
+import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import com.kalshi.betting.orchestrator.ToolServices;
 
 import java.util.function.Supplier;
@@ -9,6 +10,11 @@ import java.util.function.Supplier;
         + "Kalshi files these as 'Exotics' regardless of what they combine, so this checks the "
         + "actual legs, not the collection's category.")
 public class ListSportsCombosTool implements Supplier<String> {
+
+    // The Anthropic SDK's schema derivation requires at least one named property per tool, even
+    // for parameter-less ones — this field isn't used by get(), just satisfies that constraint.
+    @JsonPropertyDescription("Not used — this tool takes no input.")
+    public String unused;
 
     @Override
     public String get() {
