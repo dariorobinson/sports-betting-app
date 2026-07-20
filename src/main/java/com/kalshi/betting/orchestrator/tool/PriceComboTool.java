@@ -5,6 +5,8 @@ import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import com.kalshi.betting.orchestrator.ToolServices;
 import com.kalshi.betting.web.dto.LegSelection;
 import jakarta.validation.ConstraintViolation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Set;
@@ -17,6 +19,8 @@ import java.util.stream.Collectors;
         + "implied payout multiple (1/price) is what a winning $1 contract returns per dollar staked.")
 public class PriceComboTool implements Supplier<String> {
 
+    private static final Logger log = LoggerFactory.getLogger(PriceComboTool.class);
+
     @JsonPropertyDescription("Combo collection ticker, from ListSportsCombosTool")
     public String collectionTicker;
 
@@ -26,17 +30,23 @@ public class PriceComboTool implements Supplier<String> {
 
     @Override
     public String get() {
+        log.info("Calling Kalshi: price combo collectionTicker={}, legs={}", collectionTicker, legs);
         try {
             for (LegSelection leg : legs) {
                 Set<ConstraintViolation<LegSelection>> violations = ToolServices.validator.validate(leg);
                 if (!violations.isEmpty()) {
-                    return "Invalid leg selection: " + violations.stream()
+                    String message = violations.stream()
                             .map(v -> v.getPropertyPath() + ": " + v.getMessage())
                             .collect(Collectors.joining("; "));
+                    log.warn("Combo leg validation failed: {}", message);
+                    return "Invalid leg selection: " + message;
                 }
             }
-            return ToolServices.toJson(ToolServices.comboService.priceCombo(collectionTicker, legs));
+            String result = ToolServices.toJson(ToolServices.comboService.priceCombo(collectionTicker, legs));
+            log.info("Kalshi response (price combo, collectionTicker={}): {}", collectionTicker, result);
+            return result;
         } catch (Exception e) {
+            log.error("Kalshi call failed (price combo, collectionTicker={}, legs={})", collectionTicker, legs, e);
             return "Failed to price combo: " + e.getMessage();
         }
     }

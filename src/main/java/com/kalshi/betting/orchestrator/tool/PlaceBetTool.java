@@ -5,6 +5,8 @@ import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import com.kalshi.betting.orchestrator.ToolServices;
 import com.kalshi.betting.web.dto.PlaceBetRequest;
 import jakarta.validation.ConstraintViolation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.util.Set;
@@ -16,6 +18,8 @@ import java.util.stream.Collectors;
         + "executes immediately. price is in dollars for the given outcome (e.g. 0.55 for 55 "
         + "cents); YES and NO prices for the same market always sum to $1.00.")
 public class PlaceBetTool implements Supplier<String> {
+
+    private static final Logger log = LoggerFactory.getLogger(PlaceBetTool.class);
 
     @JsonPropertyDescription("Market ticker to bet on")
     public String ticker;
@@ -37,16 +41,24 @@ public class PlaceBetTool implements Supplier<String> {
 
     @Override
     public String get() {
+        log.info("Calling Kalshi: PLACE BET ticker={}, outcome={}, action={}, price={}, count={}, timeInForce={}",
+                ticker, outcome, action, price, count, timeInForce);
         try {
             PlaceBetRequest request = new PlaceBetRequest(ticker, outcome, action, price, count, timeInForce, null);
             Set<ConstraintViolation<PlaceBetRequest>> violations = ToolServices.validator.validate(request);
             if (!violations.isEmpty()) {
-                return "Invalid bet request: " + violations.stream()
+                String message = violations.stream()
                         .map(v -> v.getPropertyPath() + ": " + v.getMessage())
                         .collect(Collectors.joining("; "));
+                log.warn("Bet validation failed: {}", message);
+                return "Invalid bet request: " + message;
             }
-            return ToolServices.toJson(ToolServices.bettingService.placeBet(request));
+            String result = ToolServices.toJson(ToolServices.bettingService.placeBet(request));
+            log.info("Kalshi response (place bet, ticker={}): {}", ticker, result);
+            return result;
         } catch (Exception e) {
+            log.error("Kalshi call failed (place bet, ticker={}, outcome={}, price={}, count={})",
+                    ticker, outcome, price, count, e);
             return "Failed to place bet: " + e.getMessage();
         }
     }
