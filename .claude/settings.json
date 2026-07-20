@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__kalshi-sports-betting__list_sports",
+      "mcp__kalshi-sports-betting__list_games",
+      "mcp__kalshi-sports-betting__get_game",
+      "mcp__kalshi-sports-betting__get_market_orderbook",
+      "mcp__kalshi-sports-betting__get_balance",
+      "mcp__kalshi-sports-betting__get_positions",
+      "mcp__kalshi-sports-betting__list_my_orders",
+      "mcp__kalshi-sports-betting__list_sports_combos",
+      "mcp__kalshi-sports-betting__get_combo_legs"
+    ]
+  }
+}
