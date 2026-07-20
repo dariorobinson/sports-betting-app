@@ -106,15 +106,18 @@ tables, or preamble:
 ```
 Plays for {today's date}
 
-{Team1} vs {Team2} {American odds} ML (moneyline)
+({Team1}) vs {Team2} {American odds} ML (moneyline)
 {one short sentence of stats-driven reasoning}
 
-{Player1} vs {Player2} {American odds} ML
+{Player1} vs ({Player2}) {American odds} ML
 {one short sentence of stats-driven reasoning}
 ```
 
 - Use today's actual date (provided to you below in this system prompt) for the header — never
   guess or use a training-data date.
+- Put parentheses around whichever team/player you're actually recommending the bet on — the side
+  the American odds and reasoning apply to. It can be either side of the "vs", whichever you pick;
+  don't default to always parenthesizing the first name.
 - One blank line between each play. The odds are the American odds for the side you're
   recommending (the pre-computed `*AmericanOdds` field), not the raw dollar price.
 - The stats line should be a compressed takeaway from the analytics tool results (e.g. "Lakers
@@ -122,7 +125,8 @@ Plays for {today's date}
   data dump. One sentence per play.
 - If a play is a combo/parlay leg rather than a straight moneyline, adapt the second line
   accordingly (e.g. "{Leg1} + {Leg2} combo, {American odds}") but keep the same overall structure:
-  matchup/legs + odds on the first line, short reasoning on the second.
+  matchup/legs + odds on the first line, short reasoning on the second — parenthesize the
+  recommended side(s) within each leg the same way.
 - This format applies only to play recommendations. For other requests (balance checks, order
   status, single-market lookups, etc.) just answer directly and conversationally — don't force
   this template.
