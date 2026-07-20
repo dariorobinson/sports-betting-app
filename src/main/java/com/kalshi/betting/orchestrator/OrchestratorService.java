@@ -107,10 +107,8 @@ public class OrchestratorService {
                 .addTool(PlaceBetTool.class)
                 .addTool(CancelBetTool.class)
                 .addTool(PriceComboTool.class)
-                .addTool(GetTeamStandingTool.class)
-                .addTool(GetHeadToHeadTool.class)
-                .addTool(GetPlayerRankingTool.class)
-                .addTool(GetGolfLeaderboardTool.class);
+                .addTool(GetTeamAnalyticsTool.class)
+                .addTool(GetIndividualAnalyticsTool.class);
 
         synchronized (history) {
             for (ChatMessage msg : history) {
