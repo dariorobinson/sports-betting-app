@@ -2,6 +2,7 @@ package com.kalshi.betting.web.dto;
 
 import com.kalshi.betting.client.dto.CreateMarketInMultivariateEventCollectionResponse;
 import com.kalshi.betting.client.dto.Market;
+import com.kalshi.betting.util.AmericanOdds;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -16,6 +17,8 @@ public record ComboPriceResponse(
         String comboMarketTicker,
         String yesAskDollars,
         String noAskDollars,
+        String yesAskAmericanOdds,
+        String noAskAmericanOdds,
         String impliedYesPayoutMultiple,
         String impliedNoPayoutMultiple
 ) {
@@ -28,6 +31,8 @@ public record ComboPriceResponse(
                 response.marketTicker(),
                 yesAsk,
                 noAsk,
+                AmericanOdds.fromDollarPrice(yesAsk),
+                AmericanOdds.fromDollarPrice(noAsk),
                 payoutMultiple(yesAsk),
                 payoutMultiple(noAsk)
         );

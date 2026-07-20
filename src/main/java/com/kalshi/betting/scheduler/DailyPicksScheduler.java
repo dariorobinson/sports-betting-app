@@ -27,12 +27,11 @@ public class DailyPicksScheduler {
     private static final Logger log = LoggerFactory.getLogger(DailyPicksScheduler.class);
 
     private static final String PROMPT = """
-            Give me your top recommended plays on Kalshi sports markets right now — both \
-            single-leg markets and combo/parlay-compatible plays. Use your tools to see what's \
-            actually available and priced right now (don't rely on memory). Recommend a handful \
-            of the best single-leg plays and, separately, a couple of combo/parlay ideas if there \
-            are reasonable ones available, with your reasoning and the actual current prices for \
-            each. Keep it concise and readable as a Discord message.""";
+            Give me your top recommended plays on Kalshi sports markets right now — a handful of \
+            the best single-leg plays, plus a couple of combo/parlay ideas if there are reasonable \
+            ones available. Use your tools to see what's actually available and priced right now \
+            (don't rely on memory), and follow the required plays format and mandatory analytics \
+            research from your instructions.""";
 
     private final ObjectProvider<JDA> jdaProvider;
     private final OrchestratorService orchestratorService;

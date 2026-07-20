@@ -10,6 +10,7 @@ import com.kalshi.betting.service.BettingService;
 import com.kalshi.betting.service.ComboService;
 import com.kalshi.betting.service.PortfolioService;
 import com.kalshi.betting.service.SportsCatalogService;
+import com.kalshi.betting.sportsdata.SportsAnalyticsService;
 import jakarta.validation.Validator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +18,9 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -35,9 +39,11 @@ public class OrchestratorService {
 
     private static final Logger log = LoggerFactory.getLogger(OrchestratorService.class);
     private static final String MODEL = "claude-opus-4-8";
+    private static final ZoneId USER_ZONE = ZoneId.of("America/Chicago");
+    private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy");
 
     private final AnthropicClient client;
-    private final String systemPrompt;
+    private final String systemPromptTemplate;
     private final Map<String, List<ChatMessage>> histories = new ConcurrentHashMap<>();
 
     private record ChatMessage(String role, String content) {
@@ -48,14 +54,16 @@ public class OrchestratorService {
                                 BettingService bettingService,
                                 PortfolioService portfolioService,
                                 ComboService comboService,
+                                SportsAnalyticsService sportsAnalyticsService,
                                 Validator validator) {
         this.client = client;
         ToolServices.sportsCatalogService = sportsCatalogService;
         ToolServices.bettingService = bettingService;
         ToolServices.portfolioService = portfolioService;
         ToolServices.comboService = comboService;
+        ToolServices.sportsAnalyticsService = sportsAnalyticsService;
         ToolServices.validator = validator;
-        this.systemPrompt = loadInstructions();
+        this.systemPromptTemplate = loadInstructions();
     }
 
     private static String loadInstructions() {
@@ -66,6 +74,13 @@ public class OrchestratorService {
             log.warn("Could not load instructions.md, falling back to default prompt: {}", e.getMessage());
             return "You are a helpful assistant for browsing Kalshi sports markets and placing bets.";
         }
+    }
+
+    /** Instructions.md is a static resource — append the actual current date each call so the
+     *  model never has to guess it (it has no live clock) or fall back to a training-data date. */
+    private String currentSystemPrompt() {
+        String today = LocalDate.now(USER_ZONE).format(DATE_FORMAT);
+        return systemPromptTemplate + "\n\nToday's date is " + today + " (America/Chicago).";
     }
 
     public String chat(String userId, String userMessage) {
@@ -79,7 +94,7 @@ public class OrchestratorService {
         MessageCreateParams.Builder builder = MessageCreateParams.builder()
                 .model(MODEL)
                 .maxTokens(4096L)
-                .system(systemPrompt)
+                .system(currentSystemPrompt())
                 .addTool(ListSportsTool.class)
                 .addTool(ListGamesTool.class)
                 .addTool(GetGameTool.class)
@@ -91,7 +106,11 @@ public class OrchestratorService {
                 .addTool(GetComboLegsTool.class)
                 .addTool(PlaceBetTool.class)
                 .addTool(CancelBetTool.class)
-                .addTool(PriceComboTool.class);
+                .addTool(PriceComboTool.class)
+                .addTool(GetTeamStandingTool.class)
+                .addTool(GetHeadToHeadTool.class)
+                .addTool(GetPlayerRankingTool.class)
+                .addTool(GetGolfLeaderboardTool.class);
 
         synchronized (history) {
             for (ChatMessage msg : history) {
