@@ -143,67 +143,73 @@ isn't something this Java app can invoke on its own. The workflow is: an agent p
 here, estimates each leg's probability, picks promising combinations, and calls the `/price`
 endpoint to see Kalshi's actual price for the ones worth surfacing.
 
-## MCP server (for AI agents)
+## Discord bot
 
-Alongside the REST API, this app exposes the same capabilities as **MCP tools** via
-[Spring AI](https://docs.spring.io/spring-ai/reference/) — so any MCP-compatible agent (Claude
-Code, Claude Desktop, etc.) can discover and call them directly with structured schemas, instead
-of an agent having to curl raw REST endpoints.
+This app runs its own Discord bot in-process — no external CLI/agent session required. It uses
+**JDA** to connect to Discord's gateway directly and the **Anthropic Java SDK**'s `BetaToolRunner`
+to run an agentic tool-calling loop over the same `service/` layer the REST API uses. Modeled
+directly on a proven pattern from another project (`assistant-app`), specifically *because* an
+earlier attempt at wiring this through Claude Code's own `--channels`/MCP feature ran into
+permission-prompt friction that isn't a good fit for an always-on, unattended bot.
 
-- **Endpoint**: `POST http://localhost:8080/mcp` (streamable-http transport)
-- **Auth**: same `X-App-Api-Key` header as the REST API, if `APP_API_KEY` is set — required for
-  MCP clients too, since these tools include `place_bet`.
-- **12 tools registered** at startup (check the log line `Registered tools: 12` to confirm):
-  `list_sports`, `list_games`, `get_game`, `get_market_orderbook`, `get_balance`, `get_positions`,
-  `list_my_orders`, `place_bet`, `cancel_bet`, `list_sports_combos`, `get_combo_legs`, `price_combo`.
+- **Access control**: only DMs from one pre-authorized Discord user ID are acted on — everyone
+  else, and all server/channel messages, are silently ignored. See
+  [`DiscordListener`](src/main/java/com/kalshi/betting/discord/DiscordListener.java).
+- **No confirmation step**: unlike the REST API (which just executes whatever you tell it to),
+  there's also no confirmation step here — if the model decides to call `PlaceBetTool`, it
+  executes immediately. The system prompt ([`instructions.md`](src/main/resources/docs/instructions.md))
+  tells the model to ask clarifying questions rather than guess at bet details, but that's a
+  prompting instruction, not an enforced technical gate.
+- **Per-user conversation history** is kept in memory only (`OrchestratorService`) — it resets on
+  restart.
 
-Connect an MCP client to it — for Claude Code, add an entry along these lines (exact syntax may
-vary by version; check `claude mcp add --help`):
-```json
-{
-  "mcpServers": {
-    "kalshi-sports-betting": {
-      "type": "http",
-      "url": "http://localhost:8080/mcp",
-      "headers": { "X-App-Api-Key": "your-app-api-key-if-set" }
-    }
-  }
-}
+### Setup
+
+```bash
+export DISCORD_BOT_TOKEN="your-bot-token"                # Discord Developer Portal -> your app -> Bot
+export DISCORD_AUTHORIZED_USER_ID="your-discord-user-id"  # enable Developer Mode -> right-click yourself -> Copy User ID
+export ANTHROPIC_API_KEY="your-anthropic-api-key"         # console.anthropic.com
 ```
 
-Tool implementations live in `mcp/` and are thin adapters over the same `service/` layer the REST
-controllers use — no business logic is duplicated between the two. One inconsistency worth
-knowing: MCP tool results serialize in **camelCase** (Spring AI's own internal Jackson pathway),
-while the REST API uses **snake_case** (this app's configured Jackson naming strategy) — cosmetic
-only, doesn't affect either working correctly.
+Without `DISCORD_BOT_TOKEN` set, the bot simply doesn't start — the REST API and web UI work
+exactly as before with no Discord dependency at all (check the startup log for a clear message
+either way, no silent failure).
 
-Runs on **Spring Boot 4.1.0** + **Spring AI 2.0.0**. Two things worth knowing if you touch these
-versions again:
-- Boot 4 split `RestClient`/`RestClientAutoConfiguration` out of `spring-boot-starter-web` into
-  its own module — `spring-boot-starter-restclient` is required explicitly, or the
-  `RestClient.Builder` bean (and with it, correct snake_case JSON parsing from Kalshi) won't exist.
-- Spring AI's MCP annotations moved package between versions: `org.springaicommunity.mcp.annotation.*`
-  (1.1.x, paired with Boot 3.5.x) → `org.springframework.ai.mcp.annotation.*` (2.0.0+, paired with
-  Boot 4.x). Keep the Boot major version and Spring AI line matched — check each dependency's own
-  POM for what Boot version it actually targets before bumping either one.
+Tool classes live in `orchestrator/tool/` — each is a thin adapter (`Supplier<String>` + Jackson
+annotations for the model-facing schema) over one `service/` method, mirroring the same set of
+capabilities previously exposed as MCP tools: `ListSportsTool`, `ListGamesTool`, `GetGameTool`,
+`GetMarketOrderbookTool`, `GetBalanceTool`, `GetPositionsTool`, `ListMyOrdersTool`,
+`ListSportsCombosTool`, `GetComboLegsTool`, `PlaceBetTool`, `CancelBetTool`, `PriceComboTool`.
+
+Dependency versions (`com.anthropic:anthropic-java:2.17.0`, `net.dv8tion:JDA:5.3.0`) are matched
+to `assistant-app`'s proven-working combination rather than latest — JDA in particular has a
+major version line (6.x) with unverified compatibility here.
 
 ## Project layout
 
 ```
-config/     Kalshi connection properties, RestClient bean, API key filter
-auth/       RSA-PSS request signing
-client/     Low-level typed Kalshi API client + DTOs mirroring openapi.yaml
-service/    Sports catalog browsing, bet placement/translation, portfolio, combo pricing
-web/        This app's own REST API + DTOs
-mcp/        MCP tool adapters over the service/ layer, for AI agent access
+config/        Kalshi connection properties, RestClient bean, API key filter, Anthropic client bean
+auth/          RSA-PSS request signing
+client/        Low-level typed Kalshi API client + DTOs mirroring openapi.yaml
+service/       Sports catalog browsing, bet placement/translation, portfolio, combo pricing
+web/           This app's own REST API + DTOs
+discord/       JDA-based Discord bot (gateway connection, DM/allowlist gate)
+orchestrator/  Anthropic tool-calling loop + tool classes wrapping the service/ layer
 ```
+
+Note on Spring Boot 4.1.0: it split `RestClient`/`RestClientAutoConfiguration` out of
+`spring-boot-starter-web` into its own module — `spring-boot-starter-restclient` is required
+explicitly, or the `RestClient.Builder` bean (and with it, correct snake_case JSON parsing from
+Kalshi) won't exist. Also, its auto-configured `ObjectMapper` is the newer Jackson 3.x
+(`tools.jackson`) flavor, a different class than the classic `com.fasterxml.jackson.databind.ObjectMapper`
+— that's why `ToolServices` constructs its own plain instance rather than injecting Spring's.
 
 ## Notes / limitations
 
 - Covers sports market discovery (series → events/games → markets), order books, placing/
   cancelling limit orders (Kalshi's V2 order endpoint), balance, positions, and browsing/pricing
-  combo (multivariate event) markets — exposed both as a REST API and as MCP tools for AI agents
-  — not the full Kalshi API surface (RFQs, subaccounts, FCM, block trades, etc.).
+  combo (multivariate event) markets — exposed both as a REST API and via the Discord bot's tool
+  set — not the full Kalshi API surface (RFQs, subaccounts, FCM, block trades, etc.).
 - Uses the V2 order endpoints (`/portfolio/events/orders`) since the legacy `/portfolio/orders`
   endpoints are being phased out per Kalshi's own spec.
 - No persistence/database — it's a thin, stateless pass-through to Kalshi.

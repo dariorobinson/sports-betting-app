@@ -7,7 +7,6 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <!-- Boot 4.x line: pairs with Spring AI 2.0.0 (below), which requires Boot 4.x. -->
         <version>4.1.0</version>
         <relativePath/>
     </parent>
@@ -20,24 +19,7 @@
 
     <properties>
         <java.version>25</java.version>
-        <!-- Retain real parameter names in compiled bytecode: required for MCP tool schema
-             generation, since @McpToolParam has no explicit "name" attribute — the parameter's
-             actual Java name is what gets used. -->
-        <maven.compiler.parameters>true</maven.compiler.parameters>
-        <spring-ai.version>2.0.0</spring-ai.version>
     </properties>
-
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>org.springframework.ai</groupId>
-                <artifactId>spring-ai-bom</artifactId>
-                <version>${spring-ai.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
 
     <dependencies>
         <dependency>
@@ -59,10 +41,23 @@
             <artifactId>spring-boot-configuration-processor</artifactId>
             <optional>true</optional>
         </dependency>
+
+        <!-- Anthropic Java SDK — powers the Discord orchestrator's agentic tool-calling loop.
+             Version matched to assistant-app's proven-working combination with JDA below, rather
+             than latest (2.49.0), since this is a direct port of that working pattern. -->
         <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+            <groupId>com.anthropic</groupId>
+            <artifactId>anthropic-java</artifactId>
+            <version>2.17.0</version>
         </dependency>
+        <!-- Discord JDA — same reasoning: matched to assistant-app's proven version rather than
+             latest (6.x), which is a major version bump with unverified API compatibility here. -->
+        <dependency>
+            <groupId>net.dv8tion</groupId>
+            <artifactId>JDA</artifactId>
+            <version>5.3.0</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>

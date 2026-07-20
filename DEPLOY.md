@@ -5,10 +5,10 @@ crashes and reboots. To update later: rebuild, `scp` the new jar over, `systemct
 
 ## 0. Before you start
 
-- **Resolve the shared Discord bot token conflict first.** If your other (currently stopped) EC2
-  app used the same bot token as this one, make sure that app's listener process is fully retired
-  — not just stopped-for-now — before starting this one's. Two processes on one token will
-  conflict.
+- **Resolve the shared Discord bot token conflict first.** If any other process (another app, an
+  old deployment, a Claude Code session with `--channels`) is using the same bot token, make sure
+  it's fully stopped before starting this one — Discord only allows one gateway connection per
+  token at a time.
 - Know your EC2 instance's OS (Amazon Linux 2023 vs Ubuntu — commands below cover both) and have
   SSH access sorted.
 
@@ -100,10 +100,18 @@ sudo journalctl -u kalshi-sports-betting -f
 `kalshi.env` — most likely `KALSHI_PRIVATE_KEY_PATH` doesn't match where you put the key, or
 `KALSHI_API_KEY_ID` is still the placeholder.
 
-## 7. Point the Discord listener at it
+## 7. Discord bot
 
-Whatever process handles Discord messages needs to run on this same box and call
-`http://localhost:8080` with the `X-App-Api-Key` header set to your `APP_API_KEY` value.
+Nothing further to wire up — if `DISCORD_BOT_TOKEN` (and `DISCORD_AUTHORIZED_USER_ID`,
+`ANTHROPIC_API_KEY`) are set in `kalshi.env`, the bot starts automatically in this same process.
+Check the log for either:
+```
+sudo journalctl -u kalshi-sports-betting | grep -i discord
+```
+A clean startup shows no warning; a missing token logs `DISCORD_BOT_TOKEN not set — the Discord
+bot will not start` (harmless — the REST API still works). Once it's up, DM the bot from the
+Discord account matching `DISCORD_AUTHORIZED_USER_ID` — messages from anyone else are silently
+ignored.
 
 ## Updating later
 

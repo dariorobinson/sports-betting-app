@@ -10,17 +10,18 @@ spring:
       # warmup) without tripping — steady-state calls to Kalshi finish in well under a second.
       connect-timeout: ${KALSHI_CONNECT_TIMEOUT:10s}
       read-timeout: ${KALSHI_READ_TIMEOUT:30s}
-  ai:
-    mcp:
-      server:
-        name: kalshi-sports-betting-mcp
-        version: 1.0.0
-        protocol: STREAMABLE
-        type: SYNC
-        instructions: >-
-          Tools for browsing Kalshi sports markets, checking portfolio/balance, placing and
-          cancelling bets, and pricing combo (multivariate event) markets. Prices are dollar
-          strings like "0.5500" (55 cents); YES/NO outcome prices always sum to $1.00.
+
+discord:
+  # Bot token from the Discord Developer Portal (Applications -> your bot -> Bot -> token).
+  bot:
+    token: ${DISCORD_BOT_TOKEN:}
+  # Only DMs from this Discord user ID are acted on; everyone else is ignored. Enable Developer
+  # Mode in Discord (User Settings -> Advanced) to copy your own user ID.
+  authorized-user-id: ${DISCORD_AUTHORIZED_USER_ID:}
+
+anthropic:
+  api:
+    key: ${ANTHROPIC_API_KEY:}
 
 server:
   port: ${PORT:8080}

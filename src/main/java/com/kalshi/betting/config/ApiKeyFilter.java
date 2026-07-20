@@ -17,10 +17,11 @@ import java.security.MessageDigest;
 
 /**
  * Optional shared-secret gate on {@code /api/**} (except the unauthenticated {@code /api/status}
- * health/config check) and the MCP tool endpoint ({@code /mcp/**} — MCP clients that support
- * custom headers, e.g. Claude Code, can supply this same header). This is defense-in-depth on top
- * of binding the server to loopback ({@code server.address}) — the real control is not exposing
- * this process to anything but a trusted, co-located caller in the first place.
+ * health/config check). This is defense-in-depth on top of binding the server to loopback
+ * ({@code server.address}) — the real control is not exposing this process to anything but a
+ * trusted, co-located caller in the first place. Note: the Discord bot talks to Kalshi in-process
+ * (via the orchestrator's tool classes calling services directly), not over this HTTP API, so this
+ * filter has no bearing on Discord access at all — that's gated separately in {@code DiscordListener}.
  */
 @Component
 public class ApiKeyFilter extends OncePerRequestFilter {
@@ -53,8 +54,7 @@ public class ApiKeyFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         String path = request.getRequestURI();
-        boolean isProtectedRoute = (path.startsWith("/api/") && !path.equals("/api/status"))
-                || path.equals("/mcp") || path.startsWith("/mcp/");
+        boolean isProtectedRoute = path.startsWith("/api/") && !path.equals("/api/status");
 
         if (configuredKey == null || configuredKey.isBlank() || !isProtectedRoute) {
             chain.doFilter(request, response);
