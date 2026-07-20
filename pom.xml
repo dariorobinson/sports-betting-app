@@ -41,6 +41,15 @@
             <artifactId>spring-boot-configuration-processor</artifactId>
             <optional>true</optional>
         </dependency>
+        <!-- ToolServices uses a plain (non-Spring-managed) classic Jackson 2.x ObjectMapper to
+             serialize tool results — unlike Spring's auto-configured one, it doesn't register
+             modules automatically, so java.time types (OffsetDateTime on Market/Game DTOs) need
+             this added explicitly. No version pinned: Boot 4.1.0 manages a compatible one via its
+             own Jackson 2.x BOM import. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
 
         <!-- Anthropic Java SDK — powers the Discord orchestrator's agentic tool-calling loop.
              Version matched to assistant-app's proven-working combination with JDA below, rather
