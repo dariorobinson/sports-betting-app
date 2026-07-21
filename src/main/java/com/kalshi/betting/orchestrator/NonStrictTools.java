@@ -1,6 +1,7 @@
 package com.kalshi.betting.orchestrator;
 
 import com.anthropic.core.ObjectMappers;
+import com.anthropic.models.beta.messages.BetaCacheControlEphemeral;
 import com.anthropic.models.beta.messages.BetaTool;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.github.victools.jsonschema.generator.Option;
@@ -26,6 +27,17 @@ final class NonStrictTools {
     }
 
     static BetaTool from(Class<?> parametersType) {
+        return from(parametersType, false);
+    }
+
+    /**
+     * @param cacheBreakpoint if true, marks this tool as a prompt-cache breakpoint — Anthropic
+     *                        caches everything in the request up to and including this point, so
+     *                        setting this on the last tool in the list caches the entire (static,
+     *                        identical-every-call) tools array instead of paying full input-token
+     *                        price for it on every single request.
+     */
+    static BetaTool from(Class<?> parametersType, boolean cacheBreakpoint) {
         ObjectNode schema = extractSchema(parametersType);
         String description = schema.has("description") ? schema.remove("description").asText() : null;
         String name = toSnakeCase(parametersType.getSimpleName());
@@ -39,6 +51,9 @@ final class NonStrictTools {
                 .strict(false);
         if (description != null) {
             builder.description(description);
+        }
+        if (cacheBreakpoint) {
+            builder.cacheControl(BetaCacheControlEphemeral.builder().build());
         }
         return builder.build();
     }

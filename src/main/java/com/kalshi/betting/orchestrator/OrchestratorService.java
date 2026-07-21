@@ -1,10 +1,12 @@
 package com.kalshi.betting.orchestrator;
 
 import com.anthropic.client.AnthropicClient;
+import com.anthropic.models.beta.messages.BetaCacheControlEphemeral;
 import com.anthropic.models.beta.messages.BetaContentBlock;
 import com.anthropic.models.beta.messages.BetaContentBlockParam;
 import com.anthropic.models.beta.messages.BetaMessage;
 import com.anthropic.models.beta.messages.BetaMessageParam;
+import com.anthropic.models.beta.messages.BetaTextBlockParam;
 import com.anthropic.models.beta.messages.BetaToolResultBlockParam;
 import com.anthropic.models.beta.messages.BetaToolUseBlock;
 import com.anthropic.models.beta.messages.MessageCreateParams;
@@ -50,7 +52,7 @@ import java.util.function.Supplier;
 public class OrchestratorService {
 
     private static final Logger log = LoggerFactory.getLogger(OrchestratorService.class);
-    private static final String MODEL = "claude-opus-4-8";
+    private static final String MODEL = "claude-sonnet-5";
     private static final ZoneId USER_ZONE = ZoneId.of("America/Chicago");
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy");
     private static final int MAX_TOOL_ITERATIONS = 25;
@@ -124,12 +126,21 @@ public class OrchestratorService {
 
         history.add(new ChatMessage("user", userMessage));
 
+        // System prompt and tools are identical on every call (within the same day) — mark cache
+        // breakpoints on both so Anthropic serves them from cache instead of full input-token price
+        // on every request, including every iteration of the tool-calling loop below.
+        BetaTextBlockParam systemBlock = BetaTextBlockParam.builder()
+                .text(currentSystemPrompt())
+                .cacheControl(BetaCacheControlEphemeral.builder().build())
+                .build();
+
         MessageCreateParams.Builder builder = MessageCreateParams.builder()
                 .model(MODEL)
                 .maxTokens(4096L)
-                .system(currentSystemPrompt());
-        for (Class<?> toolClass : TOOL_CLASSES) {
-            builder.addTool(NonStrictTools.from(toolClass));
+                .system(MessageCreateParams.System.ofBetaTextBlockParams(List.of(systemBlock)));
+        for (int i = 0; i < TOOL_CLASSES.size(); i++) {
+            boolean isLastTool = i == TOOL_CLASSES.size() - 1;
+            builder.addTool(NonStrictTools.from(TOOL_CLASSES.get(i), isLastTool));
         }
 
         synchronized (history) {
