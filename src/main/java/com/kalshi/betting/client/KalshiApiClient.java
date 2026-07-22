@@ -151,6 +151,9 @@ public class KalshiApiClient {
     public GetQuotesResponse getQuotesForRfq(String rfqId) {
         MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
         params.add("rfq_id", rfqId);
+        // Kalshi requires an explicit scope filter on this endpoint (403 otherwise) — we're the RFQ
+        // creator asking for quotes responding to our own RFQ, so "self" scoped to the RFQ creator.
+        params.add("rfq_user_filter", "self");
         return get("/communications/quotes", params, true, GetQuotesResponse.class);
     }
 
