@@ -1,8 +1,8 @@
 package com.kalshi.betting.web;
 
 import com.kalshi.betting.client.dto.GetBalanceResponse;
-import com.kalshi.betting.client.dto.GetPositionsResponse;
 import com.kalshi.betting.service.PortfolioService;
+import com.kalshi.betting.web.dto.PositionsView;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -23,7 +23,7 @@ public class PortfolioController {
     }
 
     @GetMapping("/positions")
-    public GetPositionsResponse getPositions() {
+    public PositionsView getPositions() {
         return portfolioService.getPositions();
     }
 }

@@ -141,6 +141,23 @@ public class KalshiApiClient {
                 CreateMarketInMultivariateEventCollectionResponse.class);
     }
 
+    // ---- RFQs / quotes (authenticated) — combo markets have no resting order book; a real price
+    // requires asking a market maker for a quote via this request-for-quote flow. ----
+
+    public CreateRFQResponse createRfq(CreateRFQRequest request) {
+        return post("/communications/rfqs", request, CreateRFQResponse.class);
+    }
+
+    public GetQuotesResponse getQuotesForRfq(String rfqId) {
+        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+        params.add("rfq_id", rfqId);
+        return get("/communications/quotes", params, true, GetQuotesResponse.class);
+    }
+
+    public void deleteRfq(String rfqId) {
+        delete("/communications/rfqs/" + rfqId, null, Void.class);
+    }
+
     // ---- HTTP plumbing ----
 
     private <T> T get(String path, MultiValueMap<String, String> queryParams, boolean authenticated,

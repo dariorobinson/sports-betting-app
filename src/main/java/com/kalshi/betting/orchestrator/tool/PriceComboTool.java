@@ -13,10 +13,14 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-@JsonClassDescription("Materialize Kalshi's REAL price for one specific set of combo legs. This "
-        + "creates/looks up an actual market listing — it does NOT place an order or risk money, "
-        + "but does count against Kalshi's 5,000/week combo-market-creation limit. The result's "
-        + "implied payout multiple (1/price) is what a winning $1 contract returns per dollar staked.")
+@JsonClassDescription("Get Kalshi's REAL price for one specific set of combo legs. Combo markets have "
+        + "no resting order book, so this creates the market listing and submits a request-for-quote "
+        + "(RFQ) to a market maker, waiting a few seconds for a response. The result's `quoted` field "
+        + "is true if a market maker responded (yesAskDollars/noAskDollars are then real prices) or "
+        + "false if nobody quoted it in time (not an error — just means try again later or pick a "
+        + "different combination). Does NOT place an order or risk money, but does count against "
+        + "Kalshi's 5,000/week combo-market-creation limit. The implied payout multiple (1/price) is "
+        + "what a winning $1 contract returns per dollar staked.")
 public class PriceComboTool implements Supplier<String> {
 
     private static final Logger log = LoggerFactory.getLogger(PriceComboTool.class);

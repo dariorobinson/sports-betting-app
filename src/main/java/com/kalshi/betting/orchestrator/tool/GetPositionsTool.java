@@ -8,7 +8,9 @@ import org.slf4j.LoggerFactory;
 
 import java.util.function.Supplier;
 
-@JsonClassDescription("Get current open market and event positions, including exposure and realized P&L.")
+@JsonClassDescription("Get current open market and event positions, including exposure and realized "
+        + "P&L. Each market position includes eventTicker (the event/game it belongs to) — use this "
+        + "to check whether a candidate play's event is already held before recommending it.")
 public class GetPositionsTool implements Supplier<String> {
 
     private static final Logger log = LoggerFactory.getLogger(GetPositionsTool.class);

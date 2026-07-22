@@ -3,15 +3,20 @@ package com.kalshi.betting.service;
 import com.kalshi.betting.client.KalshiApiClient;
 import com.kalshi.betting.client.dto.AssociatedEvent;
 import com.kalshi.betting.client.dto.CreateMarketInMultivariateEventCollectionRequest;
+import com.kalshi.betting.client.dto.CreateRFQRequest;
 import com.kalshi.betting.client.dto.EventData;
 import com.kalshi.betting.client.dto.MultivariateEventCollection;
+import com.kalshi.betting.client.dto.Quote;
 import com.kalshi.betting.client.dto.TickerPair;
 import com.kalshi.betting.web.dto.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -30,11 +35,18 @@ import java.util.stream.Collectors;
 @Service
 public class ComboService {
 
+    private static final Logger log = LoggerFactory.getLogger(ComboService.class);
+
     private static final String SPORTS_CATEGORY = "Sports";
     private static final int LEG_RESOLUTION_LIMIT = 60;
     private static final int BATCH_SIZE = 50;
     /** How many legs to sample when just checking whether a collection has any sports legs at all. */
     private static final int SPORTS_CHECK_SAMPLE_SIZE = 25;
+    /** Combo markets have no resting order book — a real price needs a market maker to respond to
+     *  an RFQ, which isn't instant. Poll briefly rather than block indefinitely. */
+    private static final int RFQ_POLL_ATTEMPTS = 6;
+    private static final long RFQ_POLL_INTERVAL_MILLIS = 1000;
+    private static final int RFQ_QUOTE_REQUEST_CONTRACTS = 1;
 
     private final KalshiApiClient client;
 
@@ -134,17 +146,54 @@ public class ComboService {
     }
 
     /**
-     * Materializes the real Kalshi market for one specific set of legs and returns its actual
-     * price. Doesn't place an order — just creates/looks up the listing (rate-limited by Kalshi
-     * to 5,000 creations/week per account).
+     * Materializes the real Kalshi market for one specific set of legs and asks a market maker to
+     * quote it. Combo markets have no resting order book — {@code CreateMarketInMultivariateEventCollection}
+     * alone (the old, now-deprecated approach) only creates the synthetic market shell and returns
+     * degenerate placeholder pricing (yes ask $0.00 / no ask $1.00) since nobody has quoted it yet.
+     * A real price requires Kalshi's RFQ (request-for-quote) flow: submit an RFQ referencing the
+     * created market, briefly poll for a market maker's response, then clean up the RFQ either way.
+     * Doesn't place an order or risk money — the RFQ is deleted before returning, quoted or not.
      */
     public ComboPriceResponse priceCombo(String collectionTicker, List<LegSelection> legs) {
         List<TickerPair> selectedMarkets = legs.stream()
                 .map(leg -> new TickerPair(leg.marketTicker(), leg.eventTicker(), leg.side().toLowerCase()))
                 .toList();
 
-        var request = new CreateMarketInMultivariateEventCollectionRequest(selectedMarkets, true);
-        var response = client.createComboMarket(collectionTicker, request);
-        return ComboPriceResponse.from(response);
+        var createRequest = new CreateMarketInMultivariateEventCollectionRequest(selectedMarkets, true);
+        var createResponse = client.createComboMarket(collectionTicker, createRequest);
+        String eventTicker = createResponse.eventTicker();
+        String marketTicker = createResponse.marketTicker();
+
+        String rfqId = client.createRfq(
+                new CreateRFQRequest(marketTicker, RFQ_QUOTE_REQUEST_CONTRACTS, false)).id();
+        try {
+            Optional<Quote> quote = pollForQuote(rfqId);
+            return quote.map(q -> ComboPriceResponse.quoted(eventTicker, marketTicker, q))
+                    .orElseGet(() -> ComboPriceResponse.unquoted(eventTicker, marketTicker));
+        } finally {
+            try {
+                client.deleteRfq(rfqId);
+            } catch (Exception e) {
+                log.warn("Failed to clean up RFQ {} for combo market {}: {}", rfqId, marketTicker, e.getMessage());
+            }
+        }
+    }
+
+    private Optional<Quote> pollForQuote(String rfqId) {
+        for (int attempt = 0; attempt < RFQ_POLL_ATTEMPTS; attempt++) {
+            List<Quote> quotes = client.getQuotesForRfq(rfqId).quotes();
+            if (quotes != null && !quotes.isEmpty()) {
+                return Optional.of(quotes.get(0));
+            }
+            if (attempt < RFQ_POLL_ATTEMPTS - 1) {
+                try {
+                    Thread.sleep(RFQ_POLL_INTERVAL_MILLIS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        return Optional.empty();
     }
 }
