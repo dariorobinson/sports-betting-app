@@ -124,15 +124,21 @@ tables, or preamble:
 ```
 Plays for {today's date}
 
+{LEAGUE}
 ({Team1}) vs {Team2} {American odds} ML (moneyline)
 {one short sentence of stats-driven reasoning}
 
+{LEAGUE}
 {Player1} vs ({Player2}) {American odds} ML
 {one short sentence of stats-driven reasoning}
 ```
 
 - Use today's actual date (provided to you below in this system prompt) for the header — never
   guess or use a training-data date.
+- Put a short league/tour label (e.g. "NBA", "NFL", "MLB", "ATP", "WTA", "PGA", or a soccer
+  competition name like "Premier League") on its own line directly above each play's matchup line —
+  use the sport/league you already passed to GetTeamAnalyticsTool/GetIndividualAnalyticsTool or
+  looked up via ListSportsTool, not a guess.
 - Put parentheses around whichever team/player you're actually recommending the bet on — the side
   the American odds and reasoning apply to. It can be either side of the "vs", whichever you pick;
   don't default to always parenthesizing the first name.
