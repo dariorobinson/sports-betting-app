@@ -173,6 +173,13 @@ public class KalshiApiClient {
         put("/communications/rfqs/" + rfqId + "/quotes/" + quoteId + "/confirm", java.util.Map.of(), Void.class);
     }
 
+    /** Fetches a quote's current status — used to verify a confirmed quote actually executed
+     *  rather than trusting confirm's 204 response alone (confirming only "starts a timer for
+     *  order execution," it doesn't mean the trade is filled yet). */
+    public GetQuoteResponse getQuote(String rfqId, String quoteId) {
+        return get("/communications/rfqs/" + rfqId + "/quotes/" + quoteId, null, true, GetQuoteResponse.class);
+    }
+
     // ---- HTTP plumbing ----
 
     private <T> T get(String path, MultiValueMap<String, String> queryParams, boolean authenticated,

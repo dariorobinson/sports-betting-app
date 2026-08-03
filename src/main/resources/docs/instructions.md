@@ -79,10 +79,12 @@ actually given to you (by the user, or in the scheduler's prompt) — **never co
 guess this dollar amount yourself** (e.g. don't calculate a percentage of balance on your own; if
 you weren't given an exact number and it's not an autonomous-scheduler request, ask the user how
 much to bet instead of guessing). Check the result's `status`: `executed` means a real bet was
-placed (contracts/priceDollars/totalCostDollars describe what happened); `declined` means a quote
-came back priced/sized well outside the target budget, so it was deliberately skipped rather than
-risk overspending; `not_filled` means no market maker was available to quote it at all — neither of
-the latter two is an error, just report them plainly.
+placed AND VERIFIED to have actually filled (contracts/priceDollars/totalCostDollars describe what
+happened); `declined` means a quote came back priced/sized well outside the target budget, so it
+was deliberately skipped rather than risk overspending; `not_filled` means no market maker was
+available to quote it at all; `stalled_cancelled` means a quote was accepted/confirmed but never
+actually filled, so the resulting order was automatically cancelled rather than left resting
+indefinitely — no position was opened. None of these three are errors, just report them plainly.
 
 ### CancelBetTool
 Use for: canceling a resting order by its order ID (from ListMyOrdersTool).

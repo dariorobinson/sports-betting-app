@@ -53,6 +53,12 @@ public class ComboService {
     /** How much over the target dollar budget a real quote is allowed to cost before we decline it
      *  rather than risk overspending — quoters can offer more/less size than requested. */
     private static final BigDecimal BUDGET_TOLERANCE = new BigDecimal("1.25");
+    /** Confirming a quote only "starts a timer for order execution" (per Kalshi's docs) — it does
+     *  NOT mean the trade filled. Poll for actual execution rather than trust confirm's 204 alone;
+     *  if it hasn't filled by the end of this window, cancel the resulting order instead of leaving
+     *  it resting indefinitely (this is exactly the "stuck pending order" failure mode to avoid). */
+    private static final int EXECUTION_POLL_ATTEMPTS = 10;
+    private static final long EXECUTION_POLL_INTERVAL_MILLIS = 1500;
 
     private final KalshiApiClient client;
 
@@ -235,8 +241,60 @@ public class ComboService {
             return ComboBetResult.notFilled(eventTicker, marketTicker, "Accept/confirm failed: " + e.getMessage());
         }
 
+        Quote finalQuote = pollForExecution(quote.rfqId(), quote.id());
+        if (!"executed".equalsIgnoreCase(finalQuote.status())) {
+            log.warn("Combo bet on {} confirmed but did not execute within the poll window (status={}) — "
+                            + "cancelling the resulting order instead of leaving it resting.",
+                    marketTicker, finalQuote.status());
+            cancelStalledOrder(finalQuote, marketTicker);
+            return ComboBetResult.stalledCancelled(eventTicker, marketTicker,
+                    "Quote was accepted and confirmed but never actually filled within "
+                            + (EXECUTION_POLL_ATTEMPTS * EXECUTION_POLL_INTERVAL_MILLIS / 1000)
+                            + "s (last status: " + finalQuote.status() + ") — cancelled the resulting order "
+                            + "rather than leave it resting indefinitely. No position was opened.");
+        }
+
         return ComboBetResult.executed(eventTicker, marketTicker, actualContracts.toPlainString(),
                 actualPrice.toPlainString(), actualCost.setScale(2, RoundingMode.HALF_UP).toPlainString());
+    }
+
+    /** Polls a confirmed quote until it reports "executed" or the window runs out — confirming only
+     *  starts execution, it doesn't guarantee it completes promptly (or at all). */
+    private Quote pollForExecution(String rfqId, String quoteId) {
+        Quote latest = null;
+        for (int attempt = 0; attempt < EXECUTION_POLL_ATTEMPTS; attempt++) {
+            latest = client.getQuote(rfqId, quoteId).quote();
+            if ("executed".equalsIgnoreCase(latest.status())) {
+                return latest;
+            }
+            if (attempt < EXECUTION_POLL_ATTEMPTS - 1) {
+                try {
+                    Thread.sleep(EXECUTION_POLL_INTERVAL_MILLIS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        return latest;
+    }
+
+    /** Best-effort: cancels the resting order left behind by a confirmed-but-unfilled quote, using
+     *  the same cancel path as CancelBetTool. If this fails, it's logged loudly — a real order may
+     *  still be resting and need manual cleanup via ListMyOrdersTool/CancelBetTool. */
+    private void cancelStalledOrder(Quote finalQuote, String marketTicker) {
+        String orderId = finalQuote.rfqCreatorOrderId();
+        if (orderId == null || orderId.isBlank()) {
+            log.error("Combo bet on {} stalled with no rfqCreatorOrderId to cancel — check "
+                    + "ListMyOrdersTool/CancelBetTool manually for a stuck resting order.", marketTicker);
+            return;
+        }
+        try {
+            client.cancelOrder(orderId, marketTicker);
+        } catch (Exception e) {
+            log.error("Failed to cancel stalled order {} on combo market {} — it may still be resting, "
+                    + "check ListMyOrdersTool/CancelBetTool manually.", orderId, marketTicker, e);
+        }
     }
 
     private CreateMarketInMultivariateEventCollectionResponse createComboMarket(

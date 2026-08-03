@@ -13,6 +13,9 @@ public record Quote(
         String contractsFp,
         String yesBidDollars,
         String noBidDollars,
-        String status
+        String status,
+        /** The RFQ creator's (i.e. our) resulting order, once one exists — needed to check on or
+         *  cancel a trade that was accepted/confirmed but hasn't actually executed yet. */
+        String rfqCreatorOrderId
 ) {
 }
