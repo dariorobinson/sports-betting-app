@@ -56,6 +56,12 @@ public class OrchestratorService {
     private static final ZoneId USER_ZONE = ZoneId.of("America/Chicago");
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy");
     private static final int MAX_TOOL_ITERATIONS = 25;
+    /** Anthropic allows at most 4 cache_control breakpoints per request. System prompt + last tool
+     *  already use 2 (see below), leaving 2 spare — and since each iteration's tool-result message
+     *  is immutable once added to the growing conversation, every breakpoint we mark stays in the
+     *  request forever (there's no way to "unmark" an earlier one), so only the first this many
+     *  iterations may get one or the request eventually 400s ("maximum of 4 blocks with cache_control"). */
+    private static final int MAX_TOOL_LOOP_CACHE_BREAKPOINTS = 2;
 
     private static final List<Class<?>> TOOL_CLASSES = List.of(
             ListSportsTool.class,
@@ -179,12 +185,14 @@ public class OrchestratorService {
 
             // "Mandatory research" (instructions.md) means most replies make several tool calls —
             // each loop iteration below resends everything accumulated so far. Mark a cache
-            // breakpoint on the last tool result each iteration so the *next* iteration only pays
-            // full price for what's new, instead of reprocessing the whole growing exchange again.
+            // breakpoint on the last tool result of the first couple of iterations (see
+            // MAX_TOOL_LOOP_CACHE_BREAKPOINTS) so later iterations can reuse that cached prefix
+            // instead of reprocessing the whole growing exchange from scratch every time.
             List<BetaContentBlockParam> resultBlocks = new ArrayList<>();
             for (int t = 0; t < toolUses.size(); t++) {
                 boolean isLastToolResult = t == toolUses.size() - 1;
-                resultBlocks.add(BetaContentBlockParam.ofToolResult(runTool(toolUses.get(t), isLastToolResult)));
+                boolean cacheBreakpoint = isLastToolResult && iteration < MAX_TOOL_LOOP_CACHE_BREAKPOINTS;
+                resultBlocks.add(BetaContentBlockParam.ofToolResult(runTool(toolUses.get(t), cacheBreakpoint)));
             }
             BetaMessageParam toolResultMessage = BetaMessageParam.builder()
                     .role(BetaMessageParam.Role.USER)
