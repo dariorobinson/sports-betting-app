@@ -161,6 +161,18 @@ public class KalshiApiClient {
         delete("/communications/rfqs/" + rfqId, null, Void.class);
     }
 
+    /** Accepts a market maker's quote — "yes" or "no" (which side of the combo market you're
+     *  buying). Requires the quoter to then confirm before anything executes. */
+    public void acceptQuote(String rfqId, String quoteId, String acceptedSide) {
+        put("/communications/rfqs/" + rfqId + "/quotes/" + quoteId + "/accept",
+                new AcceptQuoteRequest(acceptedSide), Void.class);
+    }
+
+    /** Confirms an already-accepted quote — starts execution. */
+    public void confirmQuote(String rfqId, String quoteId) {
+        put("/communications/rfqs/" + rfqId + "/quotes/" + quoteId + "/confirm", java.util.Map.of(), Void.class);
+    }
+
     // ---- HTTP plumbing ----
 
     private <T> T get(String path, MultiValueMap<String, String> queryParams, boolean authenticated,
@@ -183,6 +195,17 @@ public class KalshiApiClient {
     private <T> T post(String path, Object body, Class<T> responseType) {
         KalshiRequestSigner.SignedHeaders signed = signer.sign("POST", basePath + path);
         return restClient.post()
+                .uri(path)
+                .headers(headers -> applyAuth(headers, signed))
+                .body(body)
+                .retrieve()
+                .onStatus(status -> status.value() >= 400, this::raiseApiException)
+                .body(responseType);
+    }
+
+    private <T> T put(String path, Object body, Class<T> responseType) {
+        KalshiRequestSigner.SignedHeaders signed = signer.sign("PUT", basePath + path);
+        return restClient.put()
                 .uri(path)
                 .headers(headers -> applyAuth(headers, signed))
                 .body(body)

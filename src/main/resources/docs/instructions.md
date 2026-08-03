@@ -68,6 +68,22 @@ ticker, outcome (YES/NO), price, and contract count that the user has actually a
 user's request is ambiguous about any of these (e.g. they didn't say how many contracts, or which
 outcome), ask a clarifying question instead of guessing and calling this tool.
 
+### PlaceComboBetTool
+Use for: actually placing a real combo bet (as opposed to PriceComboTool, which only checks a
+price). **This immediately executes with real money — there is no confirmation step before this
+tool runs.** Only call it when placing a combo bet has actually been asked for — either by the user
+directly in conversation, or by an autonomous scheduled task's prompt that explicitly instructs you
+to place bets. Never call it during a normal "what are your top plays" recommendation request
+unless placement was specifically requested. `targetDollars` must be an exact figure that was
+actually given to you (by the user, or in the scheduler's prompt) — **never compute, estimate, or
+guess this dollar amount yourself** (e.g. don't calculate a percentage of balance on your own; if
+you weren't given an exact number and it's not an autonomous-scheduler request, ask the user how
+much to bet instead of guessing). Check the result's `status`: `executed` means a real bet was
+placed (contracts/priceDollars/totalCostDollars describe what happened); `declined` means a quote
+came back priced/sized well outside the target budget, so it was deliberately skipped rather than
+risk overspending; `not_filled` means no market maker was available to quote it at all — neither of
+the latter two is an error, just report them plainly.
+
 ### CancelBetTool
 Use for: canceling a resting order by its order ID (from ListMyOrdersTool).
 

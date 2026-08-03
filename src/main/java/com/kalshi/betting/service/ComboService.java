@@ -3,6 +3,7 @@ package com.kalshi.betting.service;
 import com.kalshi.betting.client.KalshiApiClient;
 import com.kalshi.betting.client.dto.AssociatedEvent;
 import com.kalshi.betting.client.dto.CreateMarketInMultivariateEventCollectionRequest;
+import com.kalshi.betting.client.dto.CreateMarketInMultivariateEventCollectionResponse;
 import com.kalshi.betting.client.dto.CreateRFQRequest;
 import com.kalshi.betting.client.dto.EventData;
 import com.kalshi.betting.client.dto.MultivariateEventCollection;
@@ -13,6 +14,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +50,9 @@ public class ComboService {
     private static final int RFQ_POLL_ATTEMPTS = 6;
     private static final long RFQ_POLL_INTERVAL_MILLIS = 1000;
     private static final int RFQ_QUOTE_REQUEST_CONTRACTS = 1;
+    /** How much over the target dollar budget a real quote is allowed to cost before we decline it
+     *  rather than risk overspending — quoters can offer more/less size than requested. */
+    private static final BigDecimal BUDGET_TOLERANCE = new BigDecimal("1.25");
 
     private final KalshiApiClient client;
 
@@ -155,27 +161,106 @@ public class ComboService {
      * Doesn't place an order or risk money — the RFQ is deleted before returning, quoted or not.
      */
     public ComboPriceResponse priceCombo(String collectionTicker, List<LegSelection> legs) {
-        List<TickerPair> selectedMarkets = legs.stream()
-                .map(leg -> new TickerPair(leg.marketTicker(), leg.eventTicker(), leg.side().toLowerCase()))
-                .toList();
-
-        var createRequest = new CreateMarketInMultivariateEventCollectionRequest(selectedMarkets, true);
-        var createResponse = client.createComboMarket(collectionTicker, createRequest);
+        var createResponse = createComboMarket(collectionTicker, legs);
         String eventTicker = createResponse.eventTicker();
         String marketTicker = createResponse.marketTicker();
 
-        String rfqId = client.createRfq(
-                new CreateRFQRequest(marketTicker, RFQ_QUOTE_REQUEST_CONTRACTS, false)).id();
+        RfqAttempt attempt = requestQuote(marketTicker, RFQ_QUOTE_REQUEST_CONTRACTS);
         try {
-            Optional<Quote> quote = pollForQuote(rfqId);
-            return quote.map(q -> ComboPriceResponse.quoted(eventTicker, marketTicker, q))
+            return attempt.quote().map(q -> ComboPriceResponse.quoted(eventTicker, marketTicker, q))
                     .orElseGet(() -> ComboPriceResponse.unquoted(eventTicker, marketTicker));
         } finally {
-            try {
-                client.deleteRfq(rfqId);
-            } catch (Exception e) {
-                log.warn("Failed to clean up RFQ {} for combo market {}: {}", rfqId, marketTicker, e.getMessage());
-            }
+            cleanupRfq(attempt.rfqId());
+        }
+    }
+
+    /**
+     * Actually places a real combo bet — buys YES on the combo's own synthetic market (the legs
+     * already encode the desired outcome per leg, so YES on the combo market means "my whole
+     * combination hits"). Unlike {@link #priceCombo}, this doesn't just check a price: it sizes an
+     * RFQ to roughly {@code targetDollars} worth of contracts, and if a market maker quotes it
+     * within {@link #BUDGET_TOLERANCE} of that budget, accepts and confirms the quote — real money,
+     * no further confirmation step.
+     * <p>
+     * Two-phase: a throwaway 1-contract RFQ first to learn the current price (since it's needed to
+     * convert {@code targetDollars} into a contract count), then a real RFQ for that computed size.
+     */
+    public ComboBetResult placeComboBet(String collectionTicker, List<LegSelection> legs, BigDecimal targetDollars) {
+        var createResponse = createComboMarket(collectionTicker, legs);
+        String eventTicker = createResponse.eventTicker();
+        String marketTicker = createResponse.marketTicker();
+
+        RfqAttempt indicative = requestQuote(marketTicker, RFQ_QUOTE_REQUEST_CONTRACTS);
+        cleanupRfq(indicative.rfqId());
+        if (indicative.quote().isEmpty()) {
+            return ComboBetResult.notFilled(eventTicker, marketTicker,
+                    "No market maker quoted this combo at all — can't size a bet without a real price.");
+        }
+        BigDecimal price = yesAskPrice(indicative.quote().get());
+        if (price == null || price.signum() <= 0) {
+            return ComboBetResult.notFilled(eventTicker, marketTicker, "Quoted price was invalid ($0 or less).");
+        }
+        int desiredContracts = targetDollars.divide(price, 0, RoundingMode.DOWN).intValue();
+        if (desiredContracts < 1) {
+            return ComboBetResult.notFilled(eventTicker, marketTicker,
+                    "Target bet size ($" + targetDollars + ") can't buy even 1 contract at the quoted price ($"
+                            + price + ").");
+        }
+
+        RfqAttempt real = requestQuote(marketTicker, desiredContracts);
+        if (real.quote().isEmpty()) {
+            cleanupRfq(real.rfqId());
+            return ComboBetResult.notFilled(eventTicker, marketTicker,
+                    "Quoted at 1 contract but no market maker quoted the full requested size ("
+                            + desiredContracts + ").");
+        }
+        Quote quote = real.quote().get();
+        BigDecimal actualPrice = yesAskPrice(quote);
+        BigDecimal actualContracts = new BigDecimal(quote.contractsFp());
+        BigDecimal actualCost = actualPrice.multiply(actualContracts);
+        BigDecimal maxAcceptableCost = targetDollars.multiply(BUDGET_TOLERANCE);
+        if (actualCost.compareTo(maxAcceptableCost) > 0) {
+            cleanupRfq(real.rfqId());
+            return ComboBetResult.declined(eventTicker, marketTicker,
+                    "Quoted size/cost ($" + actualCost + ") exceeded the budget ($" + targetDollars
+                            + " target, $" + maxAcceptableCost + " max) — declined rather than overspend.");
+        }
+
+        try {
+            client.acceptQuote(quote.rfqId(), quote.id(), "yes");
+            client.confirmQuote(quote.rfqId(), quote.id());
+        } catch (Exception e) {
+            log.error("Failed to accept/confirm quote {} for RFQ {} on combo market {}",
+                    quote.id(), quote.rfqId(), marketTicker, e);
+            return ComboBetResult.notFilled(eventTicker, marketTicker, "Accept/confirm failed: " + e.getMessage());
+        }
+
+        return ComboBetResult.executed(eventTicker, marketTicker, actualContracts.toPlainString(),
+                actualPrice.toPlainString(), actualCost.setScale(2, RoundingMode.HALF_UP).toPlainString());
+    }
+
+    private CreateMarketInMultivariateEventCollectionResponse createComboMarket(
+            String collectionTicker, List<LegSelection> legs) {
+        List<TickerPair> selectedMarkets = legs.stream()
+                .map(leg -> new TickerPair(leg.marketTicker(), leg.eventTicker(), leg.side().toLowerCase()))
+                .toList();
+        var createRequest = new CreateMarketInMultivariateEventCollectionRequest(selectedMarkets, true);
+        return client.createComboMarket(collectionTicker, createRequest);
+    }
+
+    private record RfqAttempt(String rfqId, Optional<Quote> quote) {
+    }
+
+    private RfqAttempt requestQuote(String marketTicker, int contracts) {
+        String rfqId = client.createRfq(new CreateRFQRequest(marketTicker, contracts, false)).id();
+        return new RfqAttempt(rfqId, pollForQuote(rfqId));
+    }
+
+    private void cleanupRfq(String rfqId) {
+        try {
+            client.deleteRfq(rfqId);
+        } catch (Exception e) {
+            log.warn("Failed to clean up RFQ {}: {}", rfqId, e.getMessage());
         }
     }
 
@@ -195,5 +280,14 @@ public class ComboService {
             }
         }
         return Optional.empty();
+    }
+
+    /** yes/no on a Quote are the price the quoter is BIDDING to buy that side, so our ask to BUY
+     *  yes is (1 - noBidDollars) — Kalshi's yes+no prices always sum to $1. */
+    private static BigDecimal yesAskPrice(Quote quote) {
+        if (quote.noBidDollars() == null) {
+            return null;
+        }
+        return BigDecimal.ONE.subtract(new BigDecimal(quote.noBidDollars()));
     }
 }

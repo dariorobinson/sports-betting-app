@@ -76,6 +76,7 @@ public class OrchestratorService {
             PlaceBetTool.class,
             CancelBetTool.class,
             PriceComboTool.class,
+            PlaceComboBetTool.class,
             GetTeamAnalyticsTool.class,
             GetIndividualAnalyticsTool.class);
 
