@@ -2,6 +2,7 @@ package com.kalshi.betting.web.dto;
 
 import com.kalshi.betting.client.dto.Quote;
 import com.kalshi.betting.util.AmericanOdds;
+import com.kalshi.betting.util.ImpliedProbability;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -24,12 +25,14 @@ public record ComboPriceResponse(
         String noAskDollars,
         String yesAskAmericanOdds,
         String noAskAmericanOdds,
+        String yesAskImpliedProbability,
+        String noAskImpliedProbability,
         String impliedYesPayoutMultiple,
         String impliedNoPayoutMultiple,
         String note
 ) {
     public static ComboPriceResponse unquoted(String eventTicker, String marketTicker) {
-        return new ComboPriceResponse(eventTicker, marketTicker, false, null, null, null, null, null, null,
+        return new ComboPriceResponse(eventTicker, marketTicker, false, null, null, null, null, null, null, null, null,
                 "No market maker responded with a quote in time — this doesn't mean the combo is bad, "
                         + "just that nobody quoted it yet. Try again later, or a different leg combination.");
     }
@@ -48,6 +51,8 @@ public record ComboPriceResponse(
                 noAsk,
                 AmericanOdds.fromDollarPrice(yesAsk),
                 AmericanOdds.fromDollarPrice(noAsk),
+                ImpliedProbability.fromDollarPrice(yesAsk),
+                ImpliedProbability.fromDollarPrice(noAsk),
                 payoutMultiple(yesAsk),
                 payoutMultiple(noAsk),
                 null);

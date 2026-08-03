@@ -1,7 +1,10 @@
 package com.kalshi.betting.sportsdata;
 
 import com.kalshi.betting.sportsdata.espn.EspnApiClient;
+import com.kalshi.betting.sportsdata.espn.EspnCoreApiClient;
 import com.kalshi.betting.sportsdata.espn.dto.EspnAthlete;
+import com.kalshi.betting.sportsdata.espn.dto.EspnCompetitionDetail;
+import com.kalshi.betting.sportsdata.espn.dto.EspnEventLogResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnRankingsResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnScheduleResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnScoreboardResponse;
@@ -16,17 +19,24 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Team-level sports analytics (standings/record and head-to-head history) sourced from ESPN's
- * public API. Team names are matched fuzzily (case-insensitive, e.g. "Lakers" matches "Los
- * Angeles Lakers") since callers (the model) won't always know ESPN's exact display name.
+ * Team- and individual-sport analytics (standings/rankings and head-to-head history) sourced from
+ * ESPN's public API. Team/player names are matched fuzzily (case-insensitive, e.g. "Lakers"
+ * matches "Los Angeles Lakers") since callers (the model) won't always know ESPN's exact display
+ * name.
  */
 @Service
 public class SportsAnalyticsService {
 
-    private final EspnApiClient espnApiClient;
+    /** How many of the athlete's most recent played matches to check for a head-to-head — bounds
+     *  the number of ESPN calls (one per match, fetched concurrently) to a reasonable amount. */
+    private static final int HEAD_TO_HEAD_MATCH_LOOKBACK = 25;
 
-    public SportsAnalyticsService(EspnApiClient espnApiClient) {
+    private final EspnApiClient espnApiClient;
+    private final EspnCoreApiClient espnCoreApiClient;
+
+    public SportsAnalyticsService(EspnApiClient espnApiClient, EspnCoreApiClient espnCoreApiClient) {
         this.espnApiClient = espnApiClient;
+        this.espnCoreApiClient = espnCoreApiClient;
     }
 
     public TeamStanding getTeamStanding(String sport, String league, String teamName) {
@@ -98,16 +108,71 @@ public class SportsAnalyticsService {
     }
 
     public PlayerRanking getPlayerRanking(String sport, String tour, String playerName) {
+        EspnRankingsResponse.Rank match = findRanked(sport, tour, playerName);
+        return new PlayerRanking(match.athlete().bestDisplayName(), match.current(), match.previous(),
+                match.points(), match.trend());
+    }
+
+    /**
+     * Whether/how often two individual-sport players (currently tennis only) have played each
+     * other, and the result of each match. Unlike team sports (one schedule call), this walks the
+     * player's {@link #HEAD_TO_HEAD_MATCH_LOOKBACK} most recent played matches — ESPN's "core" API
+     * only returns a $ref per match, so each one is resolved individually (concurrently, to keep
+     * latency reasonable) and filtered down to ones against the given opponent.
+     */
+    public IndividualHeadToHeadResult getIndividualHeadToHead(String sport, String tour, String playerName,
+                                                                String opponentName) {
+        EspnRankingsResponse.Rank match = findRanked(sport, tour, playerName);
+        String athleteId = match.athlete().id();
+
+        EspnEventLogResponse log = espnCoreApiClient.getAthleteEventLog(sport, tour, athleteId);
+        List<EspnEventLogResponse.Item> items = log.events().items() == null ? List.of() : log.events().items();
+
+        List<IndividualHeadToHeadResult.Matchup> matchups = items.stream()
+                .filter(item -> Boolean.TRUE.equals(item.played()))
+                .limit(HEAD_TO_HEAD_MATCH_LOOKBACK)
+                .parallel()
+                .map(item -> espnCoreApiClient.getCompetition(item.competition().ref()))
+                .map(comp -> toMatchupIfAgainstOpponent(comp, athleteId, opponentName))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .toList();
+
+        return new IndividualHeadToHeadResult(match.athlete().bestDisplayName(), opponentName, matchups);
+    }
+
+    private static Optional<IndividualHeadToHeadResult.Matchup> toMatchupIfAgainstOpponent(
+            EspnCompetitionDetail competition, String athleteId, String opponentName) {
+        List<EspnCompetitionDetail.Competitor> competitors = competition.competitors();
+        if (competitors == null || competitors.size() != 2) {
+            return Optional.empty();
+        }
+        EspnCompetitionDetail.Competitor self = null;
+        EspnCompetitionDetail.Competitor opp = null;
+        for (EspnCompetitionDetail.Competitor c : competitors) {
+            if (athleteId.equals(c.id())) {
+                self = c;
+            } else {
+                opp = c;
+            }
+        }
+        if (self == null || opp == null || !containsIgnoreCase(opp.name(), opponentName.trim().toLowerCase())) {
+            return Optional.empty();
+        }
+        String score = competition.notes() == null || competition.notes().isEmpty()
+                ? null : competition.notes().get(0).text();
+        String result = self.winner() == null ? "unknown" : (self.winner() ? "won" : "lost");
+        return Optional.of(new IndividualHeadToHeadResult.Matchup(competition.date(), result, score));
+    }
+
+    private EspnRankingsResponse.Rank findRanked(String sport, String tour, String playerName) {
         EspnRankingsResponse rankings = espnApiClient.getRankings(sport, tour);
-        EspnRankingsResponse.Rank match = rankings.rankings().stream()
+        return rankings.rankings().stream()
                 .flatMap(r -> r.ranks().stream())
                 .filter(r -> matches(r.athlete(), playerName))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException(
                         "No player matching \"" + playerName + "\" found in " + sport + "/" + tour + " rankings"));
-
-        return new PlayerRanking(match.athlete().bestDisplayName(), match.current(), match.previous(),
-                match.points(), match.trend());
     }
 
     public GolfLeaderboardPosition getGolfLeaderboardPosition(String league, String playerName) {

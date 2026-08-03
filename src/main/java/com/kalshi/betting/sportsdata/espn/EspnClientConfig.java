@@ -21,4 +21,15 @@ public class EspnClientConfig {
                 .defaultHeader("Accept", "application/json")
                 .build();
     }
+
+    /** ESPN's "core" API — a different host, used for data the "site" API doesn't expose (e.g. an
+     *  individual athlete's full match history via eventlog/competition detail). Same reasoning as
+     *  {@link #espnRestClient()} for using the static factory instead of Spring's snake_case one. */
+    @Bean
+    public RestClient espnCoreRestClient() {
+        return RestClient.builder()
+                .baseUrl("https://sports.core.api.espn.com")
+                .defaultHeader("Accept", "application/json")
+                .build();
+    }
 }
