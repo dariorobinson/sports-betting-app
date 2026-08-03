@@ -177,9 +177,14 @@ public class OrchestratorService {
                 break;
             }
 
+            // "Mandatory research" (instructions.md) means most replies make several tool calls —
+            // each loop iteration below resends everything accumulated so far. Mark a cache
+            // breakpoint on the last tool result each iteration so the *next* iteration only pays
+            // full price for what's new, instead of reprocessing the whole growing exchange again.
             List<BetaContentBlockParam> resultBlocks = new ArrayList<>();
-            for (BetaToolUseBlock toolUse : toolUses) {
-                resultBlocks.add(BetaContentBlockParam.ofToolResult(runTool(toolUse)));
+            for (int t = 0; t < toolUses.size(); t++) {
+                boolean isLastToolResult = t == toolUses.size() - 1;
+                resultBlocks.add(BetaContentBlockParam.ofToolResult(runTool(toolUses.get(t), isLastToolResult)));
             }
             BetaMessageParam toolResultMessage = BetaMessageParam.builder()
                     .role(BetaMessageParam.Role.USER)
@@ -209,8 +214,11 @@ public class OrchestratorService {
      * Instantiates and runs the tool class matching this tool_use block's name, using
      * {@link BetaToolUseBlock#input(Class)} to parse arguments — the same public method
      * {@code BetaToolRunner} uses internally, so parsing behavior matches exactly.
+     *
+     * @param cacheBreakpoint marks this result as a prompt-cache breakpoint (see call site) —
+     *                        should be true only for the last tool result in a given loop iteration.
      */
-    private BetaToolResultBlockParam runTool(BetaToolUseBlock toolUse) {
+    private BetaToolResultBlockParam runTool(BetaToolUseBlock toolUse, boolean cacheBreakpoint) {
         Class<?> toolClass = toolClassesByName.get(toolUse.name());
         if (toolClass == null) {
             log.error("Orchestrator tool dispatch failed: unknown tool '{}'", toolUse.name());
@@ -218,6 +226,7 @@ public class OrchestratorService {
                     .toolUseId(toolUse.id())
                     .content("Error: Tool '" + toolUse.name() + "' not found")
                     .isError(true)
+                    .cacheControl(cacheBreakpoint ? BetaCacheControlEphemeral.builder().build() : null)
                     .build();
         }
         try {
@@ -226,6 +235,7 @@ public class OrchestratorService {
             return BetaToolResultBlockParam.builder()
                     .toolUseId(toolUse.id())
                     .content(output)
+                    .cacheControl(cacheBreakpoint ? BetaCacheControlEphemeral.builder().build() : null)
                     .build();
         } catch (Exception e) {
             log.error("Orchestrator tool dispatch failed for '{}'", toolUse.name(), e);
@@ -233,6 +243,7 @@ public class OrchestratorService {
                     .toolUseId(toolUse.id())
                     .content("Error: " + e.getMessage())
                     .isError(true)
+                    .cacheControl(cacheBreakpoint ? BetaCacheControlEphemeral.builder().build() : null)
                     .build();
         }
     }

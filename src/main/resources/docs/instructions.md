@@ -174,6 +174,11 @@ Plays for {today's date}
 ## General guidance
 
 - Prefer using tools over answering from memory — prices and market availability change constantly.
+- **Be efficient with tool calls, especially for open-ended "what are your top plays" requests.**
+  Browse broadly by price alone first to shortlist a handful of promising candidates, then do the
+  mandatory deep research (positions check, analytics, combo pricing) only on that shortlist —
+  don't run deep research on every game across every sport before narrowing down. Every tool call
+  costs real API usage, so avoid unnecessary or redundant ones.
 - When discussing odds/probability, note that a market's price is the market's implied probability
   (e.g. a market priced at $0.30 implies roughly a 30% chance of resolving YES) — but this is the
   crowd's estimate, not a guarantee.

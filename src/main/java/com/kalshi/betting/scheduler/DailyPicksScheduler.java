@@ -31,7 +31,13 @@ public class DailyPicksScheduler {
             the best single-leg plays, plus a couple of combo/parlay ideas if there are reasonable \
             ones available. Use your tools to see what's actually available and priced right now \
             (don't rely on memory), and follow the required plays format and mandatory analytics \
-            research from your instructions.""";
+            research from your instructions.
+
+            Be efficient about it: first browse broadly across sports/games by price alone to \
+            shortlist at most 8-10 promising candidates total, THEN do the mandatory deep research \
+            (positions check, analytics, combo pricing) only on that shortlist — don't run deep \
+            research on every game in every sport before narrowing down. The mandatory-research \
+            requirement still applies in full to whatever actually makes your final recommendations.""";
 
     private final ObjectProvider<JDA> jdaProvider;
     private final OrchestratorService orchestratorService;
