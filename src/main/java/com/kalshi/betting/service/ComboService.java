@@ -232,30 +232,51 @@ public class ComboService {
                             + " target, $" + maxAcceptableCost + " max) — declined rather than overspend.");
         }
 
+        boolean acceptOrConfirmThrew = false;
         try {
-            client.acceptQuote(quote.rfqId(), quote.id(), "yes");
+            // "accepted_side" is which side of the QUOTER's two-sided quote we're matching against,
+            // not which side we end up holding — matching their "no" bid means THEY buy no from us,
+            // leaving US net long yes (confirmed empirically: real placed bets came back holding
+            // "no" positions when this was "yes", the opposite of the intended pick every time).
+            client.acceptQuote(quote.rfqId(), quote.id(), "no");
             client.confirmQuote(quote.rfqId(), quote.id());
         } catch (Exception e) {
-            log.error("Failed to accept/confirm quote {} for RFQ {} on combo market {}",
-                    quote.id(), quote.rfqId(), marketTicker, e);
-            return ComboBetResult.notFilled(eventTicker, marketTicker, "Accept/confirm failed: " + e.getMessage());
+            // A client-side exception here (timeout, dropped response, etc.) does NOT prove the
+            // operation didn't take effect on Kalshi's side — accept/confirm may have gone through
+            // even though we never saw a clean response. Never declare failure from this alone; the
+            // real state is checked via getQuote below regardless of what happened here.
+            log.warn("accept/confirm threw for quote {} (RFQ {}) on combo market {} — checking real "
+                            + "state before concluding anything failed: {}",
+                    quote.id(), quote.rfqId(), marketTicker, e.getMessage());
+            acceptOrConfirmThrew = true;
         }
 
         Quote finalQuote = pollForExecution(quote.rfqId(), quote.id());
-        if (!"executed".equalsIgnoreCase(finalQuote.status())) {
-            log.warn("Combo bet on {} confirmed but did not execute within the poll window (status={}) — "
-                            + "cancelling the resulting order instead of leaving it resting.",
-                    marketTicker, finalQuote.status());
-            cancelStalledOrder(finalQuote, marketTicker);
-            return ComboBetResult.stalledCancelled(eventTicker, marketTicker,
-                    "Quote was accepted and confirmed but never actually filled within "
-                            + (EXECUTION_POLL_ATTEMPTS * EXECUTION_POLL_INTERVAL_MILLIS / 1000)
-                            + "s (last status: " + finalQuote.status() + ") — cancelled the resulting order "
-                            + "rather than leave it resting indefinitely. No position was opened.");
+        if ("executed".equalsIgnoreCase(finalQuote.status())) {
+            return ComboBetResult.executed(eventTicker, marketTicker, actualContracts.toPlainString(),
+                    actualPrice.toPlainString(), actualCost.setScale(2, RoundingMode.HALF_UP).toPlainString());
         }
 
-        return ComboBetResult.executed(eventTicker, marketTicker, actualContracts.toPlainString(),
-                actualPrice.toPlainString(), actualCost.setScale(2, RoundingMode.HALF_UP).toPlainString());
+        if (acceptOrConfirmThrew && !"accepted".equalsIgnoreCase(finalQuote.status())
+                && !"confirmed".equalsIgnoreCase(finalQuote.status())) {
+            // Genuinely never got anywhere — still "open" (or similar), nothing to clean up.
+            log.error("Accept/confirm failed for quote {} (RFQ {}) on combo market {} and no order resulted "
+                    + "(status={})", quote.id(), quote.rfqId(), marketTicker, finalQuote.status());
+            return ComboBetResult.notFilled(eventTicker, marketTicker,
+                    "Accept/confirm failed and no order resulted (status: " + finalQuote.status() + ").");
+        }
+
+        // Accepted/confirmed (successfully or ambiguously) but not executed within the poll window —
+        // a real order may be resting. Clean it up rather than leave it pending indefinitely.
+        log.warn("Combo bet on {} reached status={} but did not execute within the poll window — "
+                        + "cancelling the resulting order instead of leaving it resting.",
+                marketTicker, finalQuote.status());
+        cancelStalledOrder(finalQuote, marketTicker);
+        return ComboBetResult.stalledCancelled(eventTicker, marketTicker,
+                "Quote reached status \"" + finalQuote.status() + "\" but never actually filled within "
+                        + (EXECUTION_POLL_ATTEMPTS * EXECUTION_POLL_INTERVAL_MILLIS / 1000)
+                        + "s — cancelled the resulting order rather than leave it resting indefinitely. "
+                        + "No position should remain open.");
     }
 
     /** Polls a confirmed quote until it reports "executed" or the window runs out — confirming only
