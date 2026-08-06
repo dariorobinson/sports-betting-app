@@ -134,9 +134,20 @@ public class AutoComboBettingScheduler {
                 (1) call GetPositionsTool and exclude any candidate leg whose event is already held \
                 directly OR already appears in another active combo's underlyingLegEventTickers — \
                 reusing a leg across combos has happened before and must not happen again, treat it \
-                as a hard rule; (2) research analytics (records, streaks, rankings, head-to-head) for \
-                every team/player in every leg you're considering, not just the ones you end up \
-                picking.
+                as a hard rule for whichever candidates you can actually check. Some existing combo \
+                positions will show underlyingLegEventTickers as null — that's a PERMANENT, KNOWN \
+                data gap (Kalshi has no way to look up an old combo's legs, more research will never \
+                fix it), NOT a reason to stop early or skip anything below. Check what you can, note \
+                the gap in your final report if relevant, and keep going regardless; (2) research \
+                analytics (records, streaks, rankings, head-to-head) for every team/player in every \
+                leg you're considering, not just the ones you end up picking.
+
+                You MUST actually call GetTeamAnalyticsTool (or GetIndividualAnalyticsTool) at least \
+                once AND PriceComboTool at least once before you are done — stopping before making \
+                those calls is not an acceptable outcome for any reason, including incomplete \
+                position data. If, after actually pricing real candidates, fewer than the target \
+                number qualify, that's a legitimate reason to place fewer bets — but you must reach \
+                the pricing step first every single cycle.
 
                 If fewer than %d qualifying combos can be found and priced this cycle, place as many \
                 as you can and say so — don't force a bet that doesn't meet the criteria just to hit \
