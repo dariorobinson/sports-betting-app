@@ -193,17 +193,23 @@ public class KalshiWebSocketClient implements WebSocket.Listener {
             switch (type) {
                 case "quote_executed" -> {
                     QuoteExecutedMsg msg = mapper.treeToValue(envelope.msg(), QuoteExecutedMsg.class);
+                    log.info("Kalshi WebSocket quote_executed: {} (raw: {})", msg, message);
                     quoteExecutionSignal.complete(msg);
                 }
                 case "market_position" -> {
                     MarketPositionMsg msg = mapper.treeToValue(envelope.msg(), MarketPositionMsg.class);
+                    log.info("Kalshi WebSocket market_position: {} (raw: {})", msg, message);
                     if (isClosed(msg.positionFp())) {
                         activeComboLegTracker.pruneIfClosed(msg.marketTicker());
                     }
                 }
-                case "subscribed" -> log.info("Kalshi WebSocket subscribed, sid={}", envelope.sid());
+                // Logged with the full raw frame (not just the parsed fields we expected) while this
+                // integration is new — Kalshi's docs don't fully spell out this envelope's shape
+                // (e.g. sid came back null on a real "subscribed" ack, which the docs don't explain),
+                // so seeing the actual bytes is more useful than a summary until that's understood.
+                case "subscribed" -> log.info("Kalshi WebSocket subscribed: {}", message);
                 case "error" -> log.warn("Kalshi WebSocket error frame: {}", message);
-                default -> log.debug("Unhandled Kalshi WebSocket message type={}: {}", envelope.type(), message);
+                default -> log.info("Unhandled Kalshi WebSocket message type={}: {}", envelope.type(), message);
             }
         } catch (Exception e) {
             log.warn("Failed to parse Kalshi WebSocket message, ignoring: {} ({})", message, e.getMessage());
