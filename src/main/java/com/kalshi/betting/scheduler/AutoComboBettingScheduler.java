@@ -15,12 +15,13 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 
 /**
- * Autonomously PLACES real combo bets every 6 hours — unlike {@link DailyPicksScheduler}
- * (recommendations only), this actually risks real money with no human confirmation step. Bet size
- * is computed here in Java (a fixed fraction of current available balance) rather than left to the
- * model: precise arithmetic on real money shouldn't be delegated to an LLM. The exact dollar figure
- * is embedded directly in the prompt and the model is instructed to pass it through to
- * {@code PlaceComboBetTool} verbatim, not recompute or estimate it.
+ * Autonomously PLACES real combo bets every 6 hours — this actually risks real money with no human
+ * confirmation step (there used to be a separate twice-daily scheduler that only *recommended*
+ * plays; it was removed in favor of this one doing everything, recommendation-quality reasoning
+ * included). Bet size is computed here in Java (a fixed fraction of current available balance)
+ * rather than left to the model: precise arithmetic on real money shouldn't be delegated to an LLM.
+ * The exact dollar figure is embedded directly in the prompt and the model is instructed to pass it
+ * through to {@code PlaceComboBetTool} verbatim, not recompute or estimate it.
  * <p>
  * There is deliberately no loss-based circuit breaker (per explicit user choice) — only the
  * per-bet sizing rule bounds risk. Every run, successful or not, DMs a summary so there's always a
@@ -102,17 +103,34 @@ public class AutoComboBettingScheduler {
                 %sx (equivalently, implied probability at or below ~%s%%). Among combos that clear \
                 that bar, prefer the SAFEST one — the one closest to %sx / highest probability — not \
                 the highest payout multiple available. Use PriceComboTool to check real quoted prices \
-                on multiple candidates before picking. Follow the mandatory checks from your \
-                instructions in full (exclude already-held events, research analytics for every team/\
-                player in the legs) before placing anything.
+                on multiple candidates before picking.
+
+                Follow the mandatory checks from your instructions in full before placing anything: \
+                (1) call GetPositionsTool and exclude any candidate leg whose event is already held \
+                directly OR already appears in another active combo's underlyingLegEventTickers — \
+                reusing a leg across combos has happened before and must not happen again, treat it \
+                as a hard rule; (2) research analytics (records, streaks, rankings, head-to-head) for \
+                every team/player in every leg you're considering, not just the ones you end up \
+                picking.
 
                 If fewer than %d qualifying combos can be found and priced this cycle, place as many \
                 as you can and say so — don't force a bet that doesn't meet the criteria just to hit \
-                the count. After placing (or attempting to place), summarize for Discord: what you bet \
-                on, the actual contracts/price/cost from each PlaceComboBetTool result, and your \
-                reasoning for picking it — or clearly state that nothing qualified this cycle.\
+                the count, and don't reuse a leg just to fill the quota either.
+
+                Report back in Discord with the SAME level of research detail you'd give for a \
+                regular play recommendation — this is a placement report, not a one-line \
+                announcement. For each of the (up to %d) bets, whether it executed or not, include:
+                - The league/tour and the full matchup or leg list, with the side you took on each leg
+                - The American odds and implied probability for the combo as a whole
+                - A real, specific reasoning paragraph: each leg's relevant record/streak/ranking/\
+                head-to-head, and why THIS combination beat the other real candidates you priced \
+                (name at least one alternative you passed on and why)
+                - The actual outcome: for `executed`, the real contracts/price/total cost from \
+                PlaceComboBetTool's result; for `declined`/`stalled_cancelled`/`not_filled`, state \
+                that plainly and say why — these are normal outcomes, not failures to apologize for, \
+                but don't gloss over them either.\
                 """.formatted(NUMBER_OF_BETS, betSize, NUMBER_OF_BETS, MIN_PAYOUT_MULTIPLE,
-                        impliedProbabilityCeiling(), MIN_PAYOUT_MULTIPLE, NUMBER_OF_BETS);
+                        impliedProbabilityCeiling(), MIN_PAYOUT_MULTIPLE, NUMBER_OF_BETS, NUMBER_OF_BETS);
     }
 
     /** 1 / payoutMultiple as a whole-number percentage — e.g. 1.5x -> 67%. */

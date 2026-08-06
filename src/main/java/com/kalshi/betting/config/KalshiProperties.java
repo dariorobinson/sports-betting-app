@@ -23,6 +23,14 @@ public record KalshiProperties(
         @NotBlank
         String baseUrl,
 
+        @NotBlank
+        String wsUrl,
+
+        /** Kill switch for the realtime WebSocket accelerant (quote-execution/position signals) —
+         *  everything it accelerates has a REST-based fallback, so this can be flipped off without
+         *  any code change if the WS connection ever misbehaves. */
+        boolean wsEnabled,
+
         String apiKeyId,
 
         /**

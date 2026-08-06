@@ -10,7 +10,12 @@ import java.util.function.Supplier;
 
 @JsonClassDescription("Get current open market and event positions, including exposure and realized "
         + "P&L. Each market position includes eventTicker (the event/game it belongs to) — use this "
-        + "to check whether a candidate play's event is already held before recommending it.")
+        + "to check whether a candidate play's event is already held before recommending it. Combo "
+        + "positions this app itself placed also include underlyingLegEventTickers — the event "
+        + "tickers of every leg used to build that combo. Before selecting legs for a NEW combo, "
+        + "check candidate event tickers against every position's underlyingLegEventTickers too, not "
+        + "just eventTicker — reusing a leg that's already tied up in another active combo is a bug "
+        + "to actively avoid, not just an event-level duplicate.")
 public class GetPositionsTool implements Supplier<String> {
 
     private static final Logger log = LoggerFactory.getLogger(GetPositionsTool.class);

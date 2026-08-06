@@ -39,6 +39,10 @@ kalshi:
   # Production: https://api.elections.kalshi.com/trade-api/v2
   # Demo:       https://demo-api.kalshi.co/trade-api/v2
   base-url: ${KALSHI_BASE_URL:https://api.elections.kalshi.com/trade-api/v2}
+  # Realtime accelerant for combo-bet execution confirmation and leg-tracking pruning — every
+  # signal it provides has a REST-based fallback, so ws-enabled is a safe kill switch.
+  ws-url: ${KALSHI_WS_URL:wss://external-api-ws.kalshi.com/trade-api/ws/v2}
+  ws-enabled: ${KALSHI_WS_ENABLED:true}
   api-key-id: ${KALSHI_API_KEY_ID:}
   private-key-pem: ${KALSHI_PRIVATE_KEY_PEM:}
   private-key-path: ${KALSHI_PRIVATE_KEY_PATH:}

@@ -10,6 +10,8 @@ import com.kalshi.betting.client.dto.MultivariateEventCollection;
 import com.kalshi.betting.client.dto.Quote;
 import com.kalshi.betting.client.dto.TickerPair;
 import com.kalshi.betting.web.dto.*;
+import com.kalshi.betting.ws.QuoteExecutionSignal;
+import com.kalshi.betting.ws.dto.QuoteExecutedMsg;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -21,6 +23,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 /**
@@ -61,9 +67,14 @@ public class ComboService {
     private static final long EXECUTION_POLL_INTERVAL_MILLIS = 1500;
 
     private final KalshiApiClient client;
+    private final ActiveComboLegTracker activeComboLegTracker;
+    private final QuoteExecutionSignal quoteExecutionSignal;
 
-    public ComboService(KalshiApiClient client) {
+    public ComboService(KalshiApiClient client, ActiveComboLegTracker activeComboLegTracker,
+                          QuoteExecutionSignal quoteExecutionSignal) {
         this.client = client;
+        this.activeComboLegTracker = activeComboLegTracker;
+        this.quoteExecutionSignal = quoteExecutionSignal;
     }
 
     /**
@@ -253,6 +264,7 @@ public class ComboService {
 
         Quote finalQuote = pollForExecution(quote.rfqId(), quote.id());
         if ("executed".equalsIgnoreCase(finalQuote.status())) {
+            activeComboLegTracker.record(marketTicker, legs);
             return ComboBetResult.executed(eventTicker, marketTicker, actualContracts.toPlainString(),
                     actualPrice.toPlainString(), actualCost.setScale(2, RoundingMode.HALF_UP).toPlainString());
         }
@@ -280,24 +292,43 @@ public class ComboService {
     }
 
     /** Polls a confirmed quote until it reports "executed" or the window runs out — confirming only
-     *  starts execution, it doesn't guarantee it completes promptly (or at all). */
+     *  starts execution, it doesn't guarantee it completes promptly (or at all). Each wait races the
+     *  REST poll cadence against {@link QuoteExecutionSignal}'s realtime WebSocket-driven signal: if
+     *  the WS event arrives first, this wakes immediately instead of waiting out the full interval —
+     *  but a WS event is never trusted directly for a money-moving decision, it only triggers an
+     *  early, authoritative re-check via REST. If the WS never fires (disabled, disconnected, or
+     *  simply slower), this degrades exactly to the original flat-sleep polling behavior. */
     private Quote pollForExecution(String rfqId, String quoteId) {
-        Quote latest = null;
-        for (int attempt = 0; attempt < EXECUTION_POLL_ATTEMPTS; attempt++) {
-            latest = client.getQuote(rfqId, quoteId).quote();
-            if ("executed".equalsIgnoreCase(latest.status())) {
-                return latest;
-            }
-            if (attempt < EXECUTION_POLL_ATTEMPTS - 1) {
-                try {
-                    Thread.sleep(EXECUTION_POLL_INTERVAL_MILLIS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
+        try {
+            Quote latest = null;
+            for (int attempt = 0; attempt < EXECUTION_POLL_ATTEMPTS; attempt++) {
+                latest = client.getQuote(rfqId, quoteId).quote();
+                if ("executed".equalsIgnoreCase(latest.status())) {
+                    return latest;
+                }
+                if (attempt < EXECUTION_POLL_ATTEMPTS - 1) {
+                    CompletableFuture<QuoteExecutedMsg> wsSignal = quoteExecutionSignal.awaitExecution(rfqId, quoteId);
+                    try {
+                        wsSignal.get(EXECUTION_POLL_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
+                        // WS fired early — confirm via REST before trusting it (the WS payload only
+                        // tells us WHEN to re-check sooner, never WHAT the final state is).
+                        return client.getQuote(rfqId, quoteId).quote();
+                    } catch (TimeoutException e) {
+                        // no WS signal within this interval — fall through to the next REST poll,
+                        // identical cadence to the original behavior.
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return latest;
+                    } catch (ExecutionException e) {
+                        // QuoteExecutionSignal only ever completes its futures normally; unreachable
+                        // in practice, but fall through to the next REST poll defensively.
+                    }
                 }
             }
+            return latest;
+        } finally {
+            quoteExecutionSignal.cancel(rfqId, quoteId);
         }
-        return latest;
     }
 
     /** Best-effort: cancels the resting order left behind by a confirmed-but-unfilled quote, using
