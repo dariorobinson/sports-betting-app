@@ -92,6 +92,18 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Swagger UI / OpenAPI docs, auto-generated from the existing @RestController classes —
+             no per-endpoint annotations required. 3.x targets Spring Framework 7 (Boot 4); the 2.x
+             line only supports Boot 3. UI at /swagger-ui.html, raw spec at /v3/api-docs. Not under
+             /api/**, so ApiKeyFilter doesn't gate it — same as the app's existing threat model
+             (loopback binding is the real boundary; docs describe endpoints, they don't execute
+             anything by themselves). -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>3.1.0</version>
+        </dependency>
     </dependencies>
 
     <build>

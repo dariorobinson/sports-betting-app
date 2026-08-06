@@ -55,14 +55,24 @@ public class AutoComboBettingScheduler {
 
     @Scheduled(cron = "0 0 0,6,12,18 * * *", zone = "America/Chicago")
     public void run() {
+        executeCycle();
+    }
+
+    /**
+     * Runs one autonomous combo-betting cycle and returns the summary text (the same text that gets
+     * DMed) — separated from the {@code @Scheduled} entrypoint so it can also be triggered on-demand
+     * (see {@code DebugController}) without waiting for the next scheduled time. Real money, same as
+     * the scheduled path — this is not a dry run.
+     */
+    public String executeCycle() {
         JDA jda = jdaProvider.getIfAvailable();
         if (jda == null) {
             log.warn("Skipping autonomous combo betting — Discord bot is not configured (no DISCORD_BOT_TOKEN).");
-            return;
+            return "Skipped — Discord bot is not configured (no DISCORD_BOT_TOKEN).";
         }
         if (authorizedUserId == null || authorizedUserId.isBlank()) {
             log.warn("Skipping autonomous combo betting — DISCORD_AUTHORIZED_USER_ID is not set.");
-            return;
+            return "Skipped — DISCORD_AUTHORIZED_USER_ID is not set.";
         }
 
         String response;
@@ -71,9 +81,10 @@ public class AutoComboBettingScheduler {
             BigDecimal betSize = balance.multiply(BET_SIZE_FRACTION).setScale(2, RoundingMode.DOWN);
             if (betSize.signum() <= 0) {
                 log.warn("Skipping autonomous combo betting — computed bet size is $0 (balance: ${})", balance);
-                notifyUser(jda, "Autonomous combo betting skipped this cycle — balance ($" + balance
-                        + ") is too low to size a bet.");
-                return;
+                response = "Autonomous combo betting skipped this cycle — balance ($" + balance
+                        + ") is too low to size a bet.";
+                notifyUser(jda, response);
+                return response;
             }
 
             log.info("Running autonomous combo betting for user {} — balance=${}, betSize=${}",
@@ -88,6 +99,7 @@ public class AutoComboBettingScheduler {
         }
 
         notifyUser(jda, response);
+        return response;
     }
 
     private String buildPrompt(BigDecimal betSize) {
