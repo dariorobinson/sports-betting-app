@@ -121,16 +121,24 @@ autonomous combo-betting scheduled task — you MUST do both of the following. N
 even if you're confident about a matchup or believe you already know the user's positions from
 earlier in the conversation (positions change; always re-check).**
 
-**1. Exclude events and legs you already hold a position in.** Call GetPositionsTool first and
-collect the `eventTicker` of every market position (and every entry in `eventPositions`), AND the
-`underlyingLegEventTickers` of every combo position that has them. For every candidate play or
-combo leg you're considering, check its event ticker (from ListGamesTool/GetGameTool for single-leg
-plays, or `eventTicker` on each leg from GetComboLegsTool for combos) against BOTH of those lists.
-**If a candidate's event is already held directly, OR already used as a leg in another active
-combo — even if it's a different market within that same game, or buried inside a combo rather than
-a standalone position — drop the whole candidate and pick something else instead.** Never reuse a
-leg that's already tied up in an active combo; this has been a real, repeated bug — treat it as a
-hard rule, not a suggestion.
+**1. Exclude events and legs you already hold a position in — using whatever data is actually
+available, without letting gaps in that data stop you from researching or placing anything.** Call
+GetPositionsTool first and collect the `eventTicker` of every market position (and every entry in
+`eventPositions`), AND the `underlyingLegEventTickers` of every combo position that has them. For
+every candidate play or combo leg you're considering, check its event ticker (from
+ListGamesTool/GetGameTool for single-leg plays, or `eventTicker` on each leg from GetComboLegsTool
+for combos) against BOTH of those lists. **If a candidate's event matches something you can actually
+see in that data — held directly, OR listed in another active combo's `underlyingLegEventTickers` —
+drop that specific candidate and pick a different one.** This part is a hard rule, not a suggestion.
+
+`underlyingLegEventTickers` will be `null` for combo positions placed before this tracking existed
+— this is a **known, permanent gap** (Kalshi's API has no way to look up a combo's legs after the
+fact), not something you can fix or wait out. **Null leg data on some positions is NOT a reason to
+skip analytics, pricing, or placement for the whole cycle** — proceed exactly as you would
+otherwise, checking each candidate against whatever data you do have, and just note the caveat
+in your final report (e.g. "N of your existing combo positions have unknown legs and couldn't be
+checked"). Only decline a *specific* candidate if you actually find a conflict — never abort the
+entire research process just because *some* positions are unverifiable.
 
 **2. Research analytics for every team/player involved.** Call the relevant analytics tool(s) — this
 is not optional and cannot be skipped even if you're confident about a matchup.
