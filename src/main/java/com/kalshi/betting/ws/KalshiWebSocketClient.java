@@ -203,13 +203,18 @@ public class KalshiWebSocketClient implements WebSocket.Listener {
                         activeComboLegTracker.pruneIfClosed(msg.marketTicker());
                     }
                 }
-                // Logged with the full raw frame (not just the parsed fields we expected) while this
-                // integration is new — Kalshi's docs don't fully spell out this envelope's shape
-                // (e.g. sid came back null on a real "subscribed" ack, which the docs don't explain),
-                // so seeing the actual bytes is more useful than a summary until that's understood.
                 case "subscribed" -> log.info("Kalshi WebSocket subscribed: {}", message);
                 case "error" -> log.warn("Kalshi WebSocket error frame: {}", message);
-                default -> log.info("Unhandled Kalshi WebSocket message type={}: {}", envelope.type(), message);
+                // The "communications" channel is NOT account-scoped — it's a platform-wide firehose
+                // of every RFQ any user creates/deletes (confirmed live: distinct creator_ids, many
+                // messages per second), since RFQs must be visible to any market maker who might
+                // quote them. We only ever act on rfq/quote IDs we're actually waiting on (via
+                // QuoteExecutionSignal's exact-match lookup), so these are expected and harmless —
+                // explicitly ignored, not logged, rather than falling into "unhandled".
+                case "rfq_created", "rfq_deleted" -> {
+                    // no-op
+                }
+                default -> log.debug("Unhandled Kalshi WebSocket message type={}: {}", envelope.type(), message);
             }
         } catch (Exception e) {
             log.warn("Failed to parse Kalshi WebSocket message, ignoring: {} ({})", message, e.getMessage());
