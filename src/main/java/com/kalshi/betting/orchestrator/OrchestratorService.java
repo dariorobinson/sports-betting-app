@@ -55,7 +55,12 @@ public class OrchestratorService {
     private static final String MODEL = "claude-sonnet-5";
     private static final ZoneId USER_ZONE = ZoneId.of("America/Chicago");
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy");
-    private static final int MAX_TOOL_ITERATIONS = 25;
+    /** Mandatory research (positions check, per-leg analytics, per-combo pricing, leg-reuse checks)
+     *  can legitimately need a lot of tool calls now — a single ListGamesTool call for a busy series
+     *  like KXNFLGAME alone can be huge. Raised from 25 after a real autonomous-betting cycle hit
+     *  that cap mid-research and silently produced no response at all (see forceSynthesis below for
+     *  the other half of that fix — this alone doesn't guarantee headroom is always enough). */
+    private static final int MAX_TOOL_ITERATIONS = 40;
     /** Anthropic allows at most 4 cache_control breakpoints per request. System prompt + last tool
      *  already use 2 (see below), leaving 2 spare — and since each iteration's tool-result message
      *  is immutable once added to the growing conversation, every breakpoint we mark stays in the
@@ -204,6 +209,17 @@ public class OrchestratorService {
         }
 
         String responseText = finalResponse.get();
+        if (responseText.isEmpty()) {
+            // The loop ended (almost always by hitting MAX_TOOL_ITERATIONS with tool calls still
+            // pending) without the model ever producing a text turn — silently returning nothing is
+            // worse than a rushed answer, so force one more call with NO tools attached, so the
+            // model physically cannot keep researching and must respond with text.
+            log.warn("[{}] Tool loop ended without a final text response (likely hit the {}-iteration "
+                    + "cap) — forcing a no-tools synthesis call instead of returning nothing.",
+                    userId, MAX_TOOL_ITERATIONS);
+            responseText = forceSynthesis(currentBuilder);
+        }
+
         if (!responseText.isEmpty()) {
             history.add(new ChatMessage("assistant", responseText));
         } else {
@@ -212,6 +228,31 @@ public class OrchestratorService {
         }
 
         return responseText;
+    }
+
+    /** Rebuilds the accumulated conversation with NO tools attached and a blunt "stop researching,
+     *  answer now" nudge appended, so the model can only respond with text — used when the normal
+     *  tool-calling loop exhausts its iteration budget without ever producing a final answer. */
+    private String forceSynthesis(MessageCreateParams.Builder currentBuilder) {
+        MessageCreateParams currentParams = currentBuilder
+                .addUserMessage("You're out of research budget for this turn — stop calling tools and "
+                        + "give your final answer now, based on everything you've found so far. If "
+                        + "research feels incomplete, say so plainly rather than guessing at anything "
+                        + "you haven't actually checked.")
+                .build();
+
+        MessageCreateParams.Builder noToolsBuilder = MessageCreateParams.builder()
+                .model(MODEL)
+                .maxTokens(4096L)
+                .messages(currentParams.messages());
+        currentParams.system().ifPresent(noToolsBuilder::system);
+
+        BetaMessage finalMessage = client.beta().messages().create(noToolsBuilder.build());
+        StringBuilder text = new StringBuilder();
+        for (BetaContentBlock block : finalMessage.content()) {
+            block.text().ifPresent(t -> text.append(t.text()));
+        }
+        return text.toString();
     }
 
     public void clearHistory(String userId) {
