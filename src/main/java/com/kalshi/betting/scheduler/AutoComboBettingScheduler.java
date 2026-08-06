@@ -37,6 +37,11 @@ public class AutoComboBettingScheduler {
     private static final int NUMBER_OF_BETS = 2;
     /** Minimum implied payout multiple (1/price) a combo must clear — user-specified: 1.5x. */
     private static final String MIN_PAYOUT_MULTIPLE = "1.5";
+    /** How many sports/series the initial browse phase may survey before narrowing down. A real
+     *  cycle once burned its ENTIRE tool-call budget just browsing NFL+WNBA+MLB+soccer prices and
+     *  never reached analytics, real pricing, or placement — a single busy series (e.g. a full NFL
+     *  week) can be huge on its own. Capping this leaves room for the steps that actually matter. */
+    private static final int MAX_SERIES_TO_SURVEY = 2;
 
     private final ObjectProvider<JDA> jdaProvider;
     private final OrchestratorService orchestratorService;
@@ -117,6 +122,14 @@ public class AutoComboBettingScheduler {
                 the highest payout multiple available. Use PriceComboTool to check real quoted prices \
                 on multiple candidates before picking.
 
+                Keep the initial survey tight: browse at most %d sports/series total (e.g. \
+                ListGamesTool for %d series, not every sport available) before narrowing down to \
+                candidates. Surveying broadly across many series eats your entire tool-call budget \
+                before you ever reach analytics or real combo pricing — pick the %d series that look \
+                most promising by price alone and commit to them; don't keep browsing more series \
+                "just in case." The steps after narrowing down (analytics, real pricing, placement) \
+                matter more than survey breadth and need most of your budget.
+
                 Follow the mandatory checks from your instructions in full before placing anything: \
                 (1) call GetPositionsTool and exclude any candidate leg whose event is already held \
                 directly OR already appears in another active combo's underlyingLegEventTickers — \
@@ -142,7 +155,8 @@ public class AutoComboBettingScheduler {
                 that plainly and say why — these are normal outcomes, not failures to apologize for, \
                 but don't gloss over them either.\
                 """.formatted(NUMBER_OF_BETS, betSize, NUMBER_OF_BETS, MIN_PAYOUT_MULTIPLE,
-                        impliedProbabilityCeiling(), MIN_PAYOUT_MULTIPLE, NUMBER_OF_BETS, NUMBER_OF_BETS);
+                        impliedProbabilityCeiling(), MIN_PAYOUT_MULTIPLE, MAX_SERIES_TO_SURVEY,
+                        MAX_SERIES_TO_SURVEY, MAX_SERIES_TO_SURVEY, NUMBER_OF_BETS, NUMBER_OF_BETS);
     }
 
     /** 1 / payoutMultiple as a whole-number percentage — e.g. 1.5x -> 67%. */
