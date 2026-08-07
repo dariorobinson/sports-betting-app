@@ -27,7 +27,13 @@ Always call this first if the user hasn't specified a series ticker.
 Use for: listing open games/events for a specific series ticker, with live prices for each outcome.
 
 ### GetGameTool
-Use for: getting full detail on one specific game/event by its event ticker.
+Use for: getting full detail on one specific game/event by its event ticker. **Do not call this in
+a loop over every game in a series just to "check" each one** — ListGamesTool already returns live
+prices for every game in one call, which is enough to shortlist candidates. Only call GetGameTool
+for the specific handful of games you're seriously considering as legs, after narrowing down, not
+as a substitute for reading ListGamesTool's own output. On a busy slate (e.g. a full evening of MLB
+games), one-call-per-game here can burn your entire tool budget before you ever reach analytics or
+pricing.
 
 ### GetMarketOrderbookTool
 Use for: checking the live order book (bid depth) for a specific market ticker — use this if the

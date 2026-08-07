@@ -166,8 +166,11 @@ public class OrchestratorService {
         }
 
         AtomicReference<String> finalResponse = new AtomicReference<>("");
+        Map<String, Integer> toolCallCounts = new LinkedHashMap<>();
+        int iterationsUsed = 0;
         MessageCreateParams.Builder currentBuilder = builder;
         for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+            iterationsUsed = iteration + 1;
             MessageCreateParams params = currentBuilder.build();
             BetaMessage message = client.beta().messages().create(params);
 
@@ -181,6 +184,7 @@ public class OrchestratorService {
                 block.toolUse().ifPresent(t -> {
                     log.info("[{}] Orchestrator calling tool: {}", userId, t.name());
                     toolUses.add(t);
+                    toolCallCounts.merge(t.name(), 1, Integer::sum);
                 });
                 block.text().ifPresent(t -> finalResponse.set(t.text()));
             }
@@ -207,6 +211,12 @@ public class OrchestratorService {
 
             currentBuilder = params.toBuilder().addMessage(message).addMessage(toolResultMessage);
         }
+
+        // One cheap summary line per turn (not per-iteration) so a budget-exhaustion cycle is
+        // diagnosable from the default INFO logs alone — no need to re-enable DEBUG in prod, which
+        // has previously flooded logs when left on for a firehose-style channel.
+        log.info("[{}] Orchestrator tool loop finished after {} iteration(s), tool calls: {}",
+                userId, iterationsUsed, toolCallCounts);
 
         String responseText = finalResponse.get();
         if (responseText.isEmpty()) {
