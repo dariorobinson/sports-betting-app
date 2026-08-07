@@ -7,6 +7,7 @@ import com.anthropic.models.beta.messages.BetaContentBlockParam;
 import com.anthropic.models.beta.messages.BetaMessage;
 import com.anthropic.models.beta.messages.BetaMessageParam;
 import com.anthropic.models.beta.messages.BetaTextBlockParam;
+import com.anthropic.models.beta.messages.BetaThinkingConfigDisabled;
 import com.anthropic.models.beta.messages.BetaToolResultBlockParam;
 import com.anthropic.models.beta.messages.BetaToolUseBlock;
 import com.anthropic.models.beta.messages.MessageCreateParams;
@@ -148,7 +149,19 @@ public class OrchestratorService {
 
         MessageCreateParams.Builder builder = MessageCreateParams.builder()
                 .model(MODEL)
-                .maxTokens(4096L)
+                // Doubled from 4096 as headroom, not a fix by itself — billing follows tokens
+                // actually generated, not this ceiling, so this costs nothing unless a turn was
+                // genuinely truncating. The real fix for the thinking-block issue is disabling
+                // thinking below; this just protects the (verbose, multi-bet) final report from
+                // ever hitting the same kind of cap on legitimately long output.
+                .maxTokens(8192L)
+                // Confirmed via prod logs: without this, some turns come back with stopReason=
+                // max_tokens and a single "thinking" content block — the model spent its entire
+                // turn budget reasoning internally and never got to emit the tool call or text,
+                // wasting the turn outright. This app's hand-rolled loop has no use for thinking
+                // traces anyway (they're never surfaced to the user), so disable it outright rather
+                // than just padding maxTokens and hoping it's enough headroom.
+                .thinking(BetaThinkingConfigDisabled.builder().build())
                 .system(MessageCreateParams.System.ofBetaTextBlockParams(List.of(systemBlock)));
         for (int i = 0; i < TOOL_CLASSES.size(); i++) {
             boolean isLastTool = i == TOOL_CLASSES.size() - 1;
@@ -273,7 +286,8 @@ public class OrchestratorService {
 
         MessageCreateParams.Builder noToolsBuilder = MessageCreateParams.builder()
                 .model(MODEL)
-                .maxTokens(4096L)
+                .maxTokens(8192L)
+                .thinking(BetaThinkingConfigDisabled.builder().build())
                 .messages(currentParams.messages());
         currentParams.system().ifPresent(noToolsBuilder::system);
 
