@@ -180,13 +180,33 @@ public class OrchestratorService {
                     message.content().size());
 
             List<BetaToolUseBlock> toolUses = new ArrayList<>();
+            boolean sawText = false;
             for (BetaContentBlock block : message.content()) {
                 block.toolUse().ifPresent(t -> {
                     log.info("[{}] Orchestrator calling tool: {}", userId, t.name());
                     toolUses.add(t);
                     toolCallCounts.merge(t.name(), 1, Integer::sum);
                 });
-                block.text().ifPresent(t -> finalResponse.set(t.text()));
+                if (block.text().isPresent()) {
+                    sawText = true;
+                    finalResponse.set(block.text().get().text());
+                }
+            }
+
+            if (toolUses.isEmpty() && !sawText) {
+                // Neither a tool call nor text — the loop is about to end via the break below with
+                // nothing to show for this turn, which is the exact anomaly that's been intermittently
+                // triggering forceSynthesis with only a handful of iterations used (nowhere near the
+                // 40-iteration cap the fallback's log message assumes). Anthropic's SDK models several
+                // other content-block kinds (thinking, server tool use, compaction, mcp, ...) that this
+                // app never requests but could in principle still show up — dump exactly what came back
+                // so this is diagnosable from one log line instead of guessed at again.
+                log.warn("[{}] Orchestrator step produced neither a tool call nor text (turn wasted) — "
+                                + "stopReason={}, blockCount={}, blockKinds={}",
+                        userId,
+                        message.stopReason().map(Object::toString).orElse("(none)"),
+                        message.content().size(),
+                        describeBlocks(message.content()));
             }
 
             if (toolUses.isEmpty()) {
@@ -263,6 +283,29 @@ public class OrchestratorService {
             block.text().ifPresent(t -> text.append(t.text()));
         }
         return text.toString();
+    }
+
+    /** Best-effort human-readable label per content block, for the anomaly log above — covers every
+     *  block kind the SDK models, not just the text/tool_use ones this app actually requests, since
+     *  the whole point is to see if something unexpected (e.g. thinking, compaction) is showing up. */
+    private static List<String> describeBlocks(List<BetaContentBlock> blocks) {
+        List<String> kinds = new ArrayList<>();
+        for (BetaContentBlock block : blocks) {
+            if (block.isText()) kinds.add("text");
+            else if (block.isToolUse()) kinds.add("tool_use");
+            else if (block.isThinking()) kinds.add("thinking");
+            else if (block.isRedactedThinking()) kinds.add("redacted_thinking");
+            else if (block.isServerToolUse()) kinds.add("server_tool_use");
+            else if (block.isMcpToolUse()) kinds.add("mcp_tool_use");
+            else if (block.isMcpToolResult()) kinds.add("mcp_tool_result");
+            else if (block.isCompaction()) kinds.add("compaction");
+            else if (block.isContainerUpload()) kinds.add("container_upload");
+            else if (block.isWebSearchToolResult()) kinds.add("web_search_tool_result");
+            else if (block.isWebFetchToolResult()) kinds.add("web_fetch_tool_result");
+            else if (block.isCodeExecutionToolResult()) kinds.add("code_execution_tool_result");
+            else kinds.add("unknown");
+        }
+        return kinds;
     }
 
     public void clearHistory(String userId) {
