@@ -219,6 +219,13 @@ Plays for {today's date}
   broad, unbounded survey phase alone can exhaust an entire tool-call budget before analytics or
   real pricing ever start, leaving nothing placed and no useful answer. Every tool call costs real
   API usage, so avoid unnecessary or redundant ones.
+- **Batch independent tool calls into the same turn instead of one at a time.** If you already know
+  you'll need e.g. GetTeamAnalyticsTool for two different teams, or ListGamesTool for two different
+  series, or analytics for one matchup plus pricing for an unrelated one — request all of them
+  together in a single turn rather than waiting for one result before asking for the next. This
+  doesn't mean making MORE tool calls or skipping research — it's the same total calls, just fewer
+  round trips. Every round trip resends the entire conversation so far, so this materially reduces
+  API usage without giving up any research depth.
 - When discussing odds/probability, note that a market's price is the market's implied probability
   (e.g. a market priced at $0.30 implies roughly a 30% chance of resolving YES) — but this is the
   crowd's estimate, not a guarantee.

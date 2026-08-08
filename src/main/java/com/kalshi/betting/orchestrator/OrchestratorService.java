@@ -62,6 +62,13 @@ public class OrchestratorService {
      *  that cap mid-research and silently produced no response at all (see forceSynthesis below for
      *  the other half of that fix — this alone doesn't guarantee headroom is always enough). */
     private static final int MAX_TOOL_ITERATIONS = 40;
+    /** Cap on persisted turns per user in {@link #histories} (one entry per user message, one per
+     *  assistant reply — so 20 = last 10 exchanges). {@code histories} entries are plain messages
+     *  with no cache breakpoint, so every entry gets resent at full, uncached input-token price on
+     *  every future call for that user — left unbounded, this grows forever and the bill grows with
+     *  it. 10 exchanges is enough conversational memory for follow-up questions ("what did you say
+     *  about the Lakers") without carrying the cost of the user's entire history indefinitely. */
+    private static final int MAX_HISTORY_MESSAGES = 20;
     /** Anthropic allows at most 4 cache_control breakpoints per request. System prompt + last tool
      *  already use 2 (see below), leaving 2 spare — and since each iteration's tool-result message
      *  is immutable once added to the growing conversation, every breakpoint we mark stays in the
@@ -139,6 +146,55 @@ public class OrchestratorService {
 
         history.add(new ChatMessage("user", userMessage));
 
+        MessageCreateParams.Builder builder = newRequestBuilder();
+        synchronized (history) {
+            for (ChatMessage msg : history) {
+                if ("user".equals(msg.role())) {
+                    builder.addUserMessage(msg.content());
+                } else {
+                    builder.addAssistantMessage(msg.content());
+                }
+            }
+        }
+
+        String responseText = runAgentLoop(userId, builder);
+
+        if (!responseText.isEmpty()) {
+            synchronized (history) {
+                history.add(new ChatMessage("assistant", responseText));
+                while (history.size() > MAX_HISTORY_MESSAGES) {
+                    history.remove(0);
+                }
+            }
+        } else {
+            history.remove(history.size() - 1);
+            log.warn("[{}] Empty orchestrator response — rolled back user message from history", userId);
+        }
+
+        return responseText;
+    }
+
+    /**
+     * Runs one fully self-contained agent turn with NO persisted conversation memory — unlike
+     * {@link #chat}, nothing is read from or written to {@link #histories}. Built for the scheduled
+     * autonomous combo-betting task: every cycle already re-derives everything it needs from scratch
+     * (GetPositionsTool, fresh pricing, fresh analytics — see instructions.md's mandatory checks), so
+     * remembering past cycles' prompts/reports would buy zero decision-quality benefit. It would,
+     * however, cost real money forever: {@code histories} entries never get a cache breakpoint, so
+     * every past cycle's prompt+report would get resent at full, uncached input-token price on every
+     * single future call (scheduler or regular chat) for as long as the process stays up. Keeping
+     * the scheduler on this stateless path instead avoids that unbounded, ever-growing cost outright.
+     *
+     * @param logId identifies this run in logs the same way {@code userId} does for {@link #chat}
+     */
+    public String chatOnce(String logId, String userMessage) {
+        MessageCreateParams.Builder builder = newRequestBuilder().addUserMessage(userMessage);
+        return runAgentLoop(logId, builder);
+    }
+
+    /** System prompt + tool definitions, with cache breakpoints — identical setup shared by both
+     *  {@link #chat} (persisted history) and {@link #chatOnce} (single-turn, no history). */
+    private MessageCreateParams.Builder newRequestBuilder() {
         // System prompt and tools are identical on every call (within the same day) — mark cache
         // breakpoints on both so Anthropic serves them from cache instead of full input-token price
         // on every request, including every iteration of the tool-calling loop below.
@@ -167,17 +223,12 @@ public class OrchestratorService {
             boolean isLastTool = i == TOOL_CLASSES.size() - 1;
             builder.addTool(NonStrictTools.from(TOOL_CLASSES.get(i), isLastTool));
         }
+        return builder;
+    }
 
-        synchronized (history) {
-            for (ChatMessage msg : history) {
-                if ("user".equals(msg.role())) {
-                    builder.addUserMessage(msg.content());
-                } else {
-                    builder.addAssistantMessage(msg.content());
-                }
-            }
-        }
-
+    /** The actual tool-calling loop — shared by {@link #chat} and {@link #chatOnce}. {@code logId}
+     *  is just a label for log lines, not necessarily a real Discord user id (see {@link #chatOnce}). */
+    private String runAgentLoop(String logId, MessageCreateParams.Builder builder) {
         AtomicReference<String> finalResponse = new AtomicReference<>("");
         Map<String, Integer> toolCallCounts = new LinkedHashMap<>();
         int iterationsUsed = 0;
@@ -188,7 +239,7 @@ public class OrchestratorService {
             BetaMessage message = client.beta().messages().create(params);
 
             log.debug("[{}] Orchestrator step: stopReason={}, blocks={}",
-                    userId,
+                    logId,
                     message.stopReason().map(Object::toString).orElse("(none)"),
                     message.content().size());
 
@@ -196,7 +247,7 @@ public class OrchestratorService {
             boolean sawText = false;
             for (BetaContentBlock block : message.content()) {
                 block.toolUse().ifPresent(t -> {
-                    log.info("[{}] Orchestrator calling tool: {}", userId, t.name());
+                    log.info("[{}] Orchestrator calling tool: {}", logId, t.name());
                     toolUses.add(t);
                     toolCallCounts.merge(t.name(), 1, Integer::sum);
                 });
@@ -216,7 +267,7 @@ public class OrchestratorService {
                 // so this is diagnosable from one log line instead of guessed at again.
                 log.warn("[{}] Orchestrator step produced neither a tool call nor text (turn wasted) — "
                                 + "stopReason={}, blockCount={}, blockKinds={}",
-                        userId,
+                        logId,
                         message.stopReason().map(Object::toString).orElse("(none)"),
                         message.content().size(),
                         describeBlocks(message.content()));
@@ -249,7 +300,7 @@ public class OrchestratorService {
         // diagnosable from the default INFO logs alone — no need to re-enable DEBUG in prod, which
         // has previously flooded logs when left on for a firehose-style channel.
         log.info("[{}] Orchestrator tool loop finished after {} iteration(s), tool calls: {}",
-                userId, iterationsUsed, toolCallCounts);
+                logId, iterationsUsed, toolCallCounts);
 
         String responseText = finalResponse.get();
         if (responseText.isEmpty()) {
@@ -259,15 +310,8 @@ public class OrchestratorService {
             // model physically cannot keep researching and must respond with text.
             log.warn("[{}] Tool loop ended without a final text response (likely hit the {}-iteration "
                     + "cap) — forcing a no-tools synthesis call instead of returning nothing.",
-                    userId, MAX_TOOL_ITERATIONS);
+                    logId, MAX_TOOL_ITERATIONS);
             responseText = forceSynthesis(currentBuilder);
-        }
-
-        if (!responseText.isEmpty()) {
-            history.add(new ChatMessage("assistant", responseText));
-        } else {
-            history.remove(history.size() - 1);
-            log.warn("[{}] Empty orchestrator response — rolled back user message from history", userId);
         }
 
         return responseText;

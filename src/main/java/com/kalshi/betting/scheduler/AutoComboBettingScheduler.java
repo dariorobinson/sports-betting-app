@@ -96,7 +96,11 @@ public class AutoComboBettingScheduler {
 
             log.info("Running autonomous combo betting for user {} — balance=${}, betSize=${}",
                     authorizedUserId, balance, betSize);
-            response = orchestratorService.chat(authorizedUserId, buildPrompt(betSize));
+            // chatOnce, not chat: this cycle is fully self-contained (fresh positions/pricing/
+            // analytics every time per instructions.md), so it gets no benefit from persisted
+            // conversation memory — but persisting it anyway would mean resending every past
+            // cycle's prompt+report, uncached, on every future call forever. See chatOnce's javadoc.
+            response = orchestratorService.chatOnce("scheduler:" + authorizedUserId, buildPrompt(betSize));
             if (response == null || response.isEmpty()) {
                 response = "Autonomous combo betting: I couldn't generate a response this cycle.";
             }
@@ -163,18 +167,18 @@ public class AutoComboBettingScheduler {
                 as you can and say so — don't force a bet that doesn't meet the criteria just to hit \
                 the count, and don't reuse a leg just to fill the quota either.
 
-                Report back in Discord with the SAME level of research detail you'd give for a \
-                regular play recommendation — this is a placement report, not a one-line \
-                announcement. For each of the (up to %d) bets, whether it executed or not, include:
-                - The league/tour and the full matchup or leg list, with the side you took on each leg
-                - The American odds and implied probability for the combo as a whole
-                - A real, specific reasoning paragraph: each leg's relevant record/streak/ranking/\
-                head-to-head, and why THIS combination beat the other real candidates you priced \
-                (name at least one alternative you passed on and why)
-                - The actual outcome: for `executed`, the real contracts/price/total cost from \
-                PlaceComboBetTool's result; for `declined`/`stalled_cancelled`/`not_filled`, state \
-                that plainly and say why — these are normal outcomes, not failures to apologize for, \
-                but don't gloss over them either.\
+                Report back in Discord, but keep it SHORT — 3-4 sentences per bet, no more, for each \
+                of the (up to %d) bets. Do the full research/retry/comparison work as instructed \
+                above, but don't narrate any of it in the report. Per bet, cover only:
+                - The matchup/leg list, side taken, American odds, and implied probability
+                - The key stats/records/streaks behind why you picked it (this is the "why," briefly \
+                — not a full paragraph, not a comparison against every alternative you considered)
+                - The outcome in one short clause: executed with contracts/price, or \
+                declined/not_filled — no need to explain every retry attempt or exact reason it \
+                didn't fill.
+                Skip narrating the tennis survey, the positions check, or any other process detail \
+                unless something is actually actionable (e.g. a real leg conflict found) — just the \
+                bottom line per bet.\
                 """.formatted(NUMBER_OF_BETS, betSize, NUMBER_OF_BETS, MIN_PAYOUT_MULTIPLE,
                         impliedProbabilityCeiling(), MIN_PAYOUT_MULTIPLE, MAX_SERIES_TO_SURVEY,
                         MAX_SERIES_TO_SURVEY, MAX_SERIES_TO_SURVEY, NUMBER_OF_BETS, NUMBER_OF_BETS);
