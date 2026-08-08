@@ -32,8 +32,8 @@ public class AutoComboBettingScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(AutoComboBettingScheduler.class);
 
-    /** Fraction of current available balance risked per bet — user-specified: 2%. */
-    private static final BigDecimal BET_SIZE_FRACTION = new BigDecimal("0.02");
+    /** Fraction of current available balance risked per bet — user-specified: 4% (doubled from 2%). */
+    private static final BigDecimal BET_SIZE_FRACTION = new BigDecimal("0.04");
     private static final int NUMBER_OF_BETS = 2;
     /** Minimum implied payout multiple (1/price) a combo must clear — user-specified: 1.5x. */
     private static final String MIN_PAYOUT_MULTIPLE = "1.5";
