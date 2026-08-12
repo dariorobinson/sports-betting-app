@@ -80,6 +80,15 @@ public class ComboService {
     /** Hard ceiling on how many candidates get RFQ-priced across the whole shortlist build — each
      *  pricing call is a real (money-free) RFQ round-trip, so this bounds latency and Kalshi load. */
     private static final int SHORTLIST_MAX_PRICING_ATTEMPTS = 8;
+    /** Stop pricing candidates in a collection after this many consecutive failures — if its legs are
+     *  being rejected (e.g. it structurally can't form the combos we generate), don't burn the budget. */
+    private static final int SHORTLIST_MAX_CONSECUTIVE_FAILURES = 2;
+    /** Target combined probability to prioritize when choosing which candidates to price: just above
+     *  the combo floor, where the payout is best. Prevents the shortlist from filling with near-lock
+     *  combos (e.g. two ~95% NFL over/unders combine to ~90% but pay almost nothing) — those clear the
+     *  floor but aren't what we want. A small buffer above the floor also hedges against the real RFQ
+     *  quote coming back slightly worse than the product-of-legs estimate. */
+    private static final BigDecimal SHORTLIST_TARGET_PROBABILITY = new BigDecimal("0.65");
 
     private final KalshiApiClient client;
     private final ActiveComboLegTracker activeComboLegTracker;
@@ -236,6 +245,12 @@ public class ComboService {
         log.info("Shortlist build: surveying {} sports combo collection(s), minLeg={}%, minCombo={}%, "
                 + "pricing budget={}", collections.size(), minLegProbPercent, minComboProbPercent, pricingBudget);
 
+        // Give each collection a fair share of the pricing budget so one collection whose candidates
+        // keep getting rejected can't starve the others (that happened in prod: 8 attempts all spent
+        // on one collection, the other two never tried).
+        int maxPerCollection = Math.max(2,
+                (int) Math.ceil((double) pricingBudget / Math.max(collections.size(), 1)));
+
         for (ComboCollectionSummary collection : collections) {
             if (attempts >= pricingBudget) {
                 break;
@@ -243,22 +258,32 @@ public class ComboService {
             List<FavoriteLeg> favorites = strongestFavoritesInCollection(collection.collectionTicker(), minLeg);
             List<List<FavoriteLeg>> legSets = candidateLegSets(favorites, minCombo);
 
+            int perCollectionAttempts = 0;
+            int consecutiveFailures = 0;
             for (List<FavoriteLeg> legSet : legSets) {
-                if (attempts >= pricingBudget) {
+                if (attempts >= pricingBudget || perCollectionAttempts >= maxPerCollection) {
                     break;
                 }
                 List<LegSelection> selections = legSet.stream()
                         .map(f -> new LegSelection(f.eventTicker(), f.marketTicker(), f.side()))
                         .toList();
                 attempts++;
+                perCollectionAttempts++;
                 ComboPriceResponse priced;
                 try {
                     priced = priceCombo(collection.collectionTicker(), selections);
                 } catch (RuntimeException e) {
-                    log.warn("Shortlist: pricing a candidate in {} failed: {}",
-                            collection.collectionTicker(), e.getMessage());
+                    // Log the exact leg-set so a persistent rejection is diagnosable, not guessed at.
+                    log.warn("Shortlist: pricing candidate {} in {} failed: {}",
+                            selections, collection.collectionTicker(), e.getMessage());
+                    if (++consecutiveFailures >= SHORTLIST_MAX_CONSECUTIVE_FAILURES) {
+                        log.warn("Shortlist: {} consecutive pricing failures in {} — skipping the rest of "
+                                + "this collection", consecutiveFailures, collection.collectionTicker());
+                        break;
+                    }
                     continue;
                 }
+                consecutiveFailures = 0;
                 BigDecimal comboProb = parseDollar(priced.yesAskDollars());
                 if (priced.quoted() && comboProb != null && comboProb.compareTo(minCombo) >= 0) {
                     out.add(toCandidate(collection.collectionTicker(), legSet, priced));
@@ -266,8 +291,9 @@ public class ComboService {
             }
         }
 
-        out.sort(Comparator.comparing(
-                (PricedComboCandidate c) -> parseDollarOrZero(c.yesAskDollars())).reversed());
+        // Present best-payout-first (lowest combined ask = highest payout multiple) — every candidate
+        // already clears the floor, so among them the model should see the best-paying ones first.
+        out.sort(Comparator.comparing(c -> parseDollarOrZero(c.yesAskDollars())));
         log.info("Shortlist build: {} priced candidate(s) cleared the {}% combined floor after {} pricing "
                 + "attempt(s)", out.size(), minComboProbPercent, attempts);
         return out;
@@ -327,16 +353,27 @@ public class ComboService {
         return s.contains("ATP") || s.contains("WTA") || s.contains("TENNIS");
     }
 
-    /** The single strongest YES outcome across an event's markets (the favorite), or null if none
-     *  clears the leg floor. YES-only keeps leg labels clean (the favored team's name). */
+    /** A market priced at/above this is treated as degenerate — a settled or all-but-decided outcome
+     *  (a finished game often shows ~$1.00). Such a leg adds no real payout and, if the game is over,
+     *  makes the whole combo invalid on Kalshi — so it's not a usable "favorite". */
+    private static final BigDecimal DEGENERATE_PRICE_CEILING = new BigDecimal("0.97");
+
+    /** The single strongest YES outcome across an event's ACTIVE markets (the favorite), or null if
+     *  none clears the leg floor. Skips non-active markets: a finished/settled game still comes back
+     *  from the events endpoint with a degenerate ask (e.g. $1.00) and status != "active", and
+     *  including a settled event in a combo makes Kalshi reject the whole thing (invalid_parameters).
+     *  YES-only keeps leg labels clean (the favored team's name). */
     private static FavoriteLeg strongestFavorite(ComboLegEvent leg, BigDecimal minLeg) {
         if (leg.game() == null || leg.game().markets() == null) {
             return null;
         }
         FavoriteLeg best = null;
         for (MarketSummary market : leg.game().markets()) {
+            if (!"active".equalsIgnoreCase(market.status())) {
+                continue;
+            }
             BigDecimal yesProb = parseDollar(market.yesAskDollars());
-            if (yesProb == null) {
+            if (yesProb == null || yesProb.compareTo(DEGENERATE_PRICE_CEILING) >= 0) {
                 continue;
             }
             if (best == null || yesProb.compareTo(best.prob()) > 0) {
@@ -367,7 +404,9 @@ public class ComboService {
                 }
             }
         }
-        sets.sort(Comparator.comparing(ComboService::legSetProduct).reversed());
+        // Price the candidates nearest the target combined probability first (best payout that still
+        // clears the floor), not the safest ones — otherwise near-lock combos crowd out good payouts.
+        sets.sort(Comparator.comparing(s -> legSetProduct(s).subtract(SHORTLIST_TARGET_PROBABILITY).abs()));
         return sets.stream().limit(SHORTLIST_MAX_LEGSETS).toList();
     }
 

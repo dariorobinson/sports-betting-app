@@ -182,8 +182,8 @@ public class AutoComboBettingScheduler {
                 look up an old combo's legs), NOT a reason to skip anything — just check what you can \
                 and move on.
                 3. Among the candidates that survive, prefer the best PAYOUT (higher `payoutMultiple`) \
-                so long as the stats support it — the shortlist is sorted safest-first, but a slightly \
-                higher-payout candidate the analytics back is the better pick.
+                so long as the stats support it — the shortlist is already sorted best-payout-first \
+                (every candidate clears the floors), so favor the earlier ones the analytics back.
                 4. Place up to %d of them with PlaceComboBetTool, passing the candidate's \
                 `collectionTicker` and its legs (each leg's `eventTicker`, `marketTicker`, `side`) \
                 verbatim, and targetDollars EXACTLY $%s (a precomputed fixed figure — pass it verbatim, \
