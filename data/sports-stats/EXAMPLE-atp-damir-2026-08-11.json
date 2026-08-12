@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "_note": "EXAMPLE FIXTURE — the model probability here is illustrative, not real analyst output.",
+  "query": "ATP match Aug 11 2026 — first-listed player win probability",
+  "sport": "tennis",
+  "league": "atp",
+  "event_description": "ATP match (DAM vs SAK)",
+  "event_date": "2026-08-11",
+  "kalshi": {
+    "event_ticker": "KXATPMATCH-26AUG11DAMSAK",
+    "market_ticker": "KXATPMATCH-26AUG11DAMSAK-DAM",
+    "outcome_label": "DAM wins"
+  },
+  "estimate": {
+    "outcome": "yes",
+    "probability": 0.44,
+    "reasoning": "Illustrative: surface-adjusted Elo slightly favors the opponent; example only."
+  },
+  "data": [
+    {"metric": "example hard-court Elo gap", "value": "-15", "source_url": "https://tennisabstract.com/", "as_of": "2026-08-10"}
+  ],
+  "confidence": "low",
+  "gaps": "Example fixture.",
+  "fetched_at": "2026-08-11T18:00:00Z"
+}

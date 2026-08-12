@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "_note": "EXAMPLE FIXTURE — the model probability here is illustrative, not real analyst output. Delete or overwrite with real sports-stats-analyst runs.",
+  "query": "Phoenix Mercury vs Los Angeles Sparks, Aug 11 2026 — Sparks win probability",
+  "sport": "basketball",
+  "league": "wnba",
+  "event_description": "Phoenix Mercury vs Los Angeles Sparks",
+  "event_date": "2026-08-11",
+  "kalshi": {
+    "event_ticker": "KXWNBAGAME-26AUG11PHXLA",
+    "market_ticker": "KXWNBAGAME-26AUG11PHXLA-LA",
+    "outcome_label": "Los Angeles Sparks win"
+  },
+  "estimate": {
+    "outcome": "yes",
+    "probability": 0.63,
+    "reasoning": "Illustrative: weighted net rating and last-10 form, home-court, and season head-to-head; example only."
+  },
+  "data": [
+    {"metric": "example home net rating", "value": "+4.1", "source_url": "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/", "as_of": "2026-08-11"}
+  ],
+  "confidence": "medium",
+  "gaps": "Example fixture — no real injury/rest data pulled.",
+  "fetched_at": "2026-08-11T18:00:00Z"
+}

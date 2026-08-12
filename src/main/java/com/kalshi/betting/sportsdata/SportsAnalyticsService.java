@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Team- and individual-sport analytics (standings/rankings and head-to-head history) sourced from
@@ -30,6 +31,16 @@ public class SportsAnalyticsService {
     /** How many of the athlete's most recent played matches to check for a head-to-head — bounds
      *  the number of ESPN calls (one per match, fetched concurrently) to a reasonable amount. */
     private static final int HEAD_TO_HEAD_MATCH_LOOKBACK = 25;
+
+    /** ESPN standings return ~30-40 stats per team; the model only reasons about a handful when
+     *  weighing a bet. Keep just these (matched case-insensitively on the ESPN stat `name`) so the
+     *  standings payload — resent on every agentic-loop iteration — stays small. Covers the record,
+     *  form, scoring, and rank signals across baseball/basketball/football/hockey/soccer. */
+    private static final Set<String> RELEVANT_STANDINGS_STATS = Set.of(
+            "wins", "losses", "ties", "otlosses", "draws", "gamesplayed",
+            "winpercent", "leaguewinpercent", "gamesbehind", "streak",
+            "pointsfor", "pointsagainst", "pointdifferential", "differential", "points",
+            "playoffseed", "rank", "divisionrecord", "home", "road", "lasttengames");
 
     private final EspnApiClient espnApiClient;
     private final EspnCoreApiClient espnCoreApiClient;
@@ -50,7 +61,9 @@ public class SportsAnalyticsService {
 
         Map<String, String> stats = new LinkedHashMap<>();
         for (EspnStandingsResponse.Stat stat : match.stats()) {
-            stats.put(stat.name(), stat.displayValue());
+            if (stat.name() != null && RELEVANT_STANDINGS_STATS.contains(stat.name().toLowerCase())) {
+                stats.put(stat.name(), stat.displayValue());
+            }
         }
         return new TeamStanding(match.team().displayName(), stats);
     }
@@ -109,8 +122,7 @@ public class SportsAnalyticsService {
 
     public PlayerRanking getPlayerRanking(String sport, String tour, String playerName) {
         EspnRankingsResponse.Rank match = findRanked(sport, tour, playerName);
-        return new PlayerRanking(match.athlete().bestDisplayName(), match.current(), match.previous(),
-                match.points(), match.trend());
+        return new PlayerRanking(match.athlete().bestDisplayName(), match.current());
     }
 
     /**

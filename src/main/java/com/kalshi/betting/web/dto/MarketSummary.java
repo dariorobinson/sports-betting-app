@@ -4,13 +4,16 @@ import com.kalshi.betting.client.dto.Market;
 import com.kalshi.betting.util.AmericanOdds;
 import com.kalshi.betting.util.ImpliedProbability;
 
-import java.time.OffsetDateTime;
-
 /**
  * A single tradeable outcome within a game. The "ask" prices are what you'd pay right now
  * to buy that side (yes_ask to buy YES, no_ask to buy NO); they're the indicative prices
  * to show a bettor before they submit an order. American-odds and implied-probability fields
  * are both derived from the same dollar prices — see {@link AmericanOdds}, {@link ImpliedProbability}.
+ * <p>
+ * Deliberately does NOT carry last-trade price or close time: this record is serialized into tool
+ * results that get resent on every iteration of the agentic loop, multiplied by every market in a
+ * slate, and the model selects purely on the ask price/odds/probability — the extra fields were pure
+ * token cost. (The underlying {@link Market} client DTO still has them if ever needed.)
  */
 public record MarketSummary(
         String ticker,
@@ -22,9 +25,7 @@ public record MarketSummary(
         String yesAskAmericanOdds,
         String noAskAmericanOdds,
         String yesAskImpliedProbability,
-        String noAskImpliedProbability,
-        String lastPriceDollars,
-        OffsetDateTime closeTime
+        String noAskImpliedProbability
 ) {
     public static MarketSummary from(Market m) {
         return new MarketSummary(
@@ -32,7 +33,6 @@ public record MarketSummary(
                 m.yesAskDollars(), m.noAskDollars(),
                 AmericanOdds.fromDollarPrice(m.yesAskDollars()), AmericanOdds.fromDollarPrice(m.noAskDollars()),
                 ImpliedProbability.fromDollarPrice(m.yesAskDollars()),
-                ImpliedProbability.fromDollarPrice(m.noAskDollars()),
-                m.lastPriceDollars(), m.closeTime());
+                ImpliedProbability.fromDollarPrice(m.noAskDollars()));
     }
 }

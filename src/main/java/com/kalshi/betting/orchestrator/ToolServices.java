@@ -1,5 +1,6 @@
 package com.kalshi.betting.orchestrator;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -28,6 +29,11 @@ public class ToolServices {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+            // Omit null fields from tool results — a null carries no information for the model but
+            // still costs tokens, and this exchange is resent on every iteration of the agentic loop
+            // (e.g. an unquoted combo emits ~8 explicit nulls). Tool-path mapper only; the HTTP/
+            // Swagger responses use Boot's separate Jackson 3.x mapper and are unaffected.
+            .setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL)
             .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
 
     public static SportsCatalogService sportsCatalogService;

@@ -14,15 +14,17 @@ import java.util.List;
  * (Kalshi has no API to look up a combo market's composing legs after the fact — only the app that
  * built it knows) — non-null means "these events are tied up in this combo, don't reuse them as
  * legs in a new one."
+ * <p>
+ * Carries only what's needed to decide whether an event is already held (ticker/eventTicker,
+ * current position size, exposure, and the combo legs) — the P&L/fees/traded-value bookkeeping
+ * fields were dropped: the model never uses them to place a NEW bet, and this view is resent on
+ * every agentic-loop iteration.
  */
 public record MarketPositionView(
         String ticker,
         String eventTicker,
-        String totalTradedDollars,
         String positionFp,
         String marketExposureDollars,
-        String realizedPnlDollars,
-        String feesPaidDollars,
         List<String> underlyingLegEventTickers
 ) {
     public static MarketPositionView from(MarketPosition position, String eventTicker,
@@ -30,11 +32,8 @@ public record MarketPositionView(
         return new MarketPositionView(
                 position.ticker(),
                 eventTicker,
-                position.totalTradedDollars(),
                 position.positionFp(),
                 position.marketExposureDollars(),
-                position.realizedPnlDollars(),
-                position.feesPaidDollars(),
                 underlyingLegEventTickers);
     }
 }

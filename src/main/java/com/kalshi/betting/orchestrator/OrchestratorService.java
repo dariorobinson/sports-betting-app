@@ -10,6 +10,7 @@ import com.anthropic.models.beta.messages.BetaTextBlockParam;
 import com.anthropic.models.beta.messages.BetaThinkingConfigDisabled;
 import com.anthropic.models.beta.messages.BetaToolResultBlockParam;
 import com.anthropic.models.beta.messages.BetaToolUseBlock;
+import com.anthropic.models.beta.messages.BetaUsage;
 import com.anthropic.models.beta.messages.MessageCreateParams;
 import com.kalshi.betting.orchestrator.tool.*;
 import com.kalshi.betting.service.BettingService;
@@ -232,11 +233,21 @@ public class OrchestratorService {
         AtomicReference<String> finalResponse = new AtomicReference<>("");
         Map<String, Integer> toolCallCounts = new LinkedHashMap<>();
         int iterationsUsed = 0;
+        // Aggregate token usage across the loop so cost is visible from the normal INFO logs (input
+        // is the dominant driver — the whole conversation is resent each iteration; cache_read is
+        // billed at ~10% of input, cache_write at ~125%, so the split matters for reading the bill).
+        long inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0;
         MessageCreateParams.Builder currentBuilder = builder;
         for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
             iterationsUsed = iteration + 1;
             MessageCreateParams params = currentBuilder.build();
             BetaMessage message = client.beta().messages().create(params);
+
+            BetaUsage usage = message.usage();
+            inputTokens += usage.inputTokens();
+            outputTokens += usage.outputTokens();
+            cacheReadTokens += usage.cacheReadInputTokens().orElse(0L);
+            cacheWriteTokens += usage.cacheCreationInputTokens().orElse(0L);
 
             log.debug("[{}] Orchestrator step: stopReason={}, blocks={}",
                     logId,
@@ -299,8 +310,10 @@ public class OrchestratorService {
         // One cheap summary line per turn (not per-iteration) so a budget-exhaustion cycle is
         // diagnosable from the default INFO logs alone — no need to re-enable DEBUG in prod, which
         // has previously flooded logs when left on for a firehose-style channel.
-        log.info("[{}] Orchestrator tool loop finished after {} iteration(s), tool calls: {}",
-                logId, iterationsUsed, toolCallCounts);
+        log.info("[{}] Orchestrator tool loop finished after {} iteration(s), tool calls: {}, "
+                        + "tokens: input={}, output={}, cache_read={}, cache_write={}",
+                logId, iterationsUsed, toolCallCounts,
+                inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
 
         String responseText = finalResponse.get();
         if (responseText.isEmpty()) {

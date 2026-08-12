@@ -35,8 +35,18 @@ public class AutoComboBettingScheduler {
     /** Fraction of current available balance risked per bet — user-specified: 4% (doubled from 2%). */
     private static final BigDecimal BET_SIZE_FRACTION = new BigDecimal("0.04");
     private static final int NUMBER_OF_BETS = 2;
-    /** Minimum implied payout multiple (1/price) a combo must clear — user-specified: 1.5x. */
-    private static final String MIN_PAYOUT_MULTIPLE = "1.5";
+    /** Minimum COMBINED implied probability a whole combo must clear — user-specified: 60%. A
+     *  combo's combined probability is roughly the product of its legs, so two ~65% team favorites
+     *  land around 42% (a coin-flip lottery ticket, which is what we're moving away from). Because
+     *  payout multiple ≈ 1/probability, a 60% floor caps the payout at ~1.67x — that's the
+     *  intended trade: more likely to actually hit, in exchange for a smaller multiple. */
+    private static final int MIN_COMBO_PROBABILITY = 60;
+    /** Minimum implied probability of each INDIVIDUAL leg — user-specified: 70%. Every leg must be
+     *  a clear favorite on its own; this screens out coin-flip legs and, combined with the 60%
+     *  combo floor, naturally favors sports with genuinely strong favorites (tennis especially)
+     *  over near-even team matchups. Necessary but not sufficient: three 70% legs only combine to
+     *  ~34%, so in practice the legs that actually clear the combo floor are stronger than 70%. */
+    private static final int MIN_LEG_PROBABILITY = 70;
     /** How many sports/series the initial browse phase may survey before narrowing down, ON TOP OF
      *  the mandatory ATP/WTA tennis check (see buildPrompt) — tennis doesn't count against this cap
      *  since it's a single mandatory check, not a competing choice. A real cycle once burned its
@@ -122,11 +132,26 @@ public class AutoComboBettingScheduler {
                 pass it verbatim as targetDollars to PlaceComboBetTool, do not recalculate or estimate \
                 it yourself).
 
-                Selection criteria: only consider combos with an implied payout multiple of at least \
-                %sx (equivalently, implied probability at or below ~%s%%). Among combos that clear \
-                that bar, prefer the SAFEST one — the one closest to %sx / highest probability — not \
-                the highest payout multiple available. Use PriceComboTool to check real quoted prices \
-                on multiple candidates before picking.
+                Selection criteria — READ CAREFULLY, this is the priority this cycle. Build combos \
+                out of STRONG individual favorites so the combined probability stays high; do NOT \
+                chase big payout multiples built on near-coin-flip legs.
+                (a) Each individual leg must have a market-implied probability of at least %d%% on \
+                its own (a clear favorite). Drop any candidate leg below that.
+                (b) The COMBINED combo (all legs together, from PriceComboTool) must have a market-\
+                implied probability of at least %d%%. Legs multiply, so two ~65%% favorites combine \
+                to only ~42%% — that sub-coin-flip kind of combo is exactly what we're moving away \
+                from. You'll typically need legs well above the leg minimum to clear this (roughly \
+                ~78%% each for a 2-leg combo, or ~85%% each for a 3-leg combo).
+                (c) Among combos clearing both (a) and (b), prefer the best PAYOUT — the combo whose \
+                combined probability sits closest to (but not below) the %d%% floor. Payout multiple \
+                is about 1 divided by probability, so a combo right at the floor pays about %sx while \
+                a safer ~72%% combo pays only ~1.38x. Adding a strong third leg is the main way to \
+                lift the payout back up while staying above the floor: three ~85%% favorites combine \
+                to ~61%% (paying ~1.64x), which beats two ~85%% favorites at ~72%% (paying ~1.38x). \
+                So prefer a 3-leg combo when you can find three legs that each clear (a) and together \
+                clear (b); fall back to 2 legs otherwise. Tennis (ATP/WTA) is usually the best source \
+                of these strong favorites — lean on it. Use PriceComboTool on several candidates and \
+                compare their real combined quotes before committing.
 
                 Always check ATP and WTA (tennis) as part of every survey — call ListSportsTool and \
                 look for any currently open tennis series, then ListGamesTool on whichever are open. \
@@ -179,18 +204,19 @@ public class AutoComboBettingScheduler {
                 Skip narrating the tennis survey, the positions check, or any other process detail \
                 unless something is actually actionable (e.g. a real leg conflict found) — just the \
                 bottom line per bet.\
-                """.formatted(NUMBER_OF_BETS, betSize, NUMBER_OF_BETS, MIN_PAYOUT_MULTIPLE,
-                        impliedProbabilityCeiling(), MIN_PAYOUT_MULTIPLE, MAX_SERIES_TO_SURVEY,
-                        MAX_SERIES_TO_SURVEY, MAX_SERIES_TO_SURVEY, NUMBER_OF_BETS, NUMBER_OF_BETS);
+                """.formatted(NUMBER_OF_BETS, betSize, NUMBER_OF_BETS, MIN_LEG_PROBABILITY,
+                        MIN_COMBO_PROBABILITY, MIN_COMBO_PROBABILITY, maxPayoutMultipleAtFloor(),
+                        MAX_SERIES_TO_SURVEY, MAX_SERIES_TO_SURVEY, MAX_SERIES_TO_SURVEY,
+                        NUMBER_OF_BETS, NUMBER_OF_BETS);
     }
 
-    /** 1 / payoutMultiple as a whole-number percentage — e.g. 1.5x -> 67%. */
-    private static String impliedProbabilityCeiling() {
-        BigDecimal multiple = new BigDecimal(MIN_PAYOUT_MULTIPLE);
-        return BigDecimal.ONE.divide(multiple, 4, RoundingMode.HALF_UP)
-                .multiply(BigDecimal.valueOf(100))
-                .setScale(0, RoundingMode.HALF_UP)
-                .toPlainString();
+    /** Max payout multiple implied by the combo-probability floor (1 / probability) — e.g. a 60%
+     *  floor -> ~1.67x. Shown in the prompt so the model knows the payout it should be aiming near
+     *  (the best-paying end of the qualifying range is the combo sitting right at the 60% floor). */
+    private static String maxPayoutMultipleAtFloor() {
+        BigDecimal probability = BigDecimal.valueOf(MIN_COMBO_PROBABILITY)
+                .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP);
+        return BigDecimal.ONE.divide(probability, 2, RoundingMode.HALF_UP).toPlainString();
     }
 
     private void notifyUser(JDA jda, String message) {
