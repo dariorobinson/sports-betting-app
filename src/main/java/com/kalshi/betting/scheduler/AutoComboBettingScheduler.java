@@ -45,18 +45,19 @@ public class AutoComboBettingScheduler {
     /** Combos to place per run — 4. The scheduler runs 2×/day (see cron), so this keeps daily volume
      *  at ~8 combos (same as the old 4×/day × 2) while halving the number of expensive model cycles. */
     private static final int NUMBER_OF_BETS = 4;
-    /** Minimum COMBINED implied probability a whole combo must clear — user-specified: 60%. A
-     *  combo's combined probability is roughly the product of its legs, so two ~65% team favorites
-     *  land around 42% (a coin-flip lottery ticket, which is what we're moving away from). Because
-     *  payout multiple ≈ 1/probability, a 60% floor caps the payout at ~1.67x — that's the
-     *  intended trade: more likely to actually hit, in exchange for a smaller multiple. */
-    private static final int MIN_COMBO_PROBABILITY = 60;
-    /** Minimum implied probability of each INDIVIDUAL leg — user-specified: 70%. Every leg must be
-     *  a clear favorite on its own; this screens out coin-flip legs and, combined with the 60%
-     *  combo floor, naturally favors sports with genuinely strong favorites (tennis especially)
-     *  over near-even team matchups. Necessary but not sufficient: three 70% legs only combine to
-     *  ~34%, so in practice the legs that actually clear the combo floor are stronger than 70%. */
+    /** Minimum PAYOUT MULTIPLE a whole combo must reach — user-specified: 1.6x. Payout ≈ 1/combined
+     *  probability, so this means combined probability ≤ 1/1.6 = 62.5%. The shortlist builder stacks
+     *  as many 70%+ favorite legs as it takes to get the combined probability down far enough to hit
+     *  this multiple (e.g. two ~0.78 favorites, or ~five ~0.90 favorites). Replaces the old 60%
+     *  combined-probability floor, which capped payouts at ~1.67x and left many combos under 1.5x. */
+    private static final String MIN_PAYOUT_MULTIPLE = "1.6";
+    /** Minimum implied probability of each INDIVIDUAL leg — user-specified: 70%. Every leg must be a
+     *  clear favorite on its own; this screens out coin-flip legs and favors genuinely strong
+     *  favorites (tennis especially). Legs are stacked to reach {@link #MIN_PAYOUT_MULTIPLE}. */
     private static final int MIN_LEG_PROBABILITY = 70;
+    /** Most legs a combo may have — the builder adds legs (each still a 70%+ favorite) until the
+     *  payout multiple is met; strong favorites multiply slowly, so it can take several. */
+    private static final int MAX_COMBO_LEGS = 5;
     /** How many combo collections the Java shortlist builder surveys per cycle. */
     private static final int MAX_COLLECTIONS_TO_SURVEY = 4;
 
@@ -119,13 +120,14 @@ public class AutoComboBettingScheduler {
             // model only has to select and place — this is the main Anthropic cost saving. K = 2×
             // the target so the model has real alternatives to choose among.
             List<PricedComboCandidate> shortlist = comboService.buildPricedCandidateShortlist(
-                    MIN_LEG_PROBABILITY, MIN_COMBO_PROBABILITY, NUMBER_OF_BETS * 2, MAX_COLLECTIONS_TO_SURVEY);
+                    MIN_LEG_PROBABILITY, new BigDecimal(MIN_PAYOUT_MULTIPLE), MAX_COMBO_LEGS,
+                    NUMBER_OF_BETS * 2, MAX_COLLECTIONS_TO_SURVEY);
 
             if (shortlist.isEmpty()) {
                 // No qualifying combos priced — don't spend a single Anthropic token this cycle.
                 log.info("Autonomous combo betting: no qualifying combos this cycle — skipping the model call.");
-                response = "Autonomous combo betting: no combos cleared the " + MIN_COMBO_PROBABILITY
-                        + "% combined / " + MIN_LEG_PROBABILITY + "% per-leg floor this cycle (checked "
+                response = "Autonomous combo betting: no combos reached the " + MIN_PAYOUT_MULTIPLE
+                        + "x payout floor with " + MIN_LEG_PROBABILITY + "%+ legs this cycle (checked "
                         + MAX_COLLECTIONS_TO_SURVEY + " collections). No bets placed.";
                 notifyUser(jda, response);
                 return response;
@@ -159,9 +161,11 @@ public class AutoComboBettingScheduler {
                 real money, no confirmation needed from me, that's the point of this scheduled task.
 
                 I have ALREADY surveyed the market and RFQ-priced a shortlist of candidate combos for \
-                you (below). Every candidate already clears the floors: each leg is a market-implied \
-                favorite of at least %d%%, and the whole combo is at least %d%% combined. You do NOT \
-                need to browse markets or price combos from scratch — pick from this shortlist.
+                you (below). Every candidate already clears the bar: each leg is a market-implied \
+                favorite of at least %d%% on its own, and the whole combo pays at least %sx. A combo \
+                may have several legs — that's how the payout is reached while keeping every leg a \
+                strong favorite. You do NOT need to browse markets or price combos from scratch — \
+                pick from this shortlist.
 
                 PRE-PRICED CANDIDATE SHORTLIST (JSON):
                 %s
@@ -181,9 +185,10 @@ public class AutoComboBettingScheduler {
                 `underlyingLegEventTickers` as null; that's a PERMANENT, KNOWN data gap (Kalshi can't \
                 look up an old combo's legs), NOT a reason to skip anything — just check what you can \
                 and move on.
-                3. Among the candidates that survive, prefer the best PAYOUT (higher `payoutMultiple`) \
-                so long as the stats support it — the shortlist is already sorted best-payout-first \
-                (every candidate clears the floors), so favor the earlier ones the analytics back.
+                3. The shortlist is already ordered safest-first (highest combined probability among \
+                combos that still hit the payout floor). Every candidate already pays enough, so \
+                don't chase payout — just pick the ones the analytics most support, favoring the \
+                earlier (safer) ones when the stats are comparable.
                 4. Place up to %d of them with PlaceComboBetTool, passing the candidate's \
                 `collectionTicker` and its legs (each leg's `eventTicker`, `marketTicker`, `side`) \
                 verbatim, and targetDollars EXACTLY $%s (a precomputed fixed figure — pass it verbatim, \
@@ -203,7 +208,7 @@ public class AutoComboBettingScheduler {
                 declined/not_filled.
                 Skip narrating the positions check or any other process detail unless something is \
                 actually actionable (e.g. a real leg conflict found) — just the bottom line per bet.\
-                """.formatted(NUMBER_OF_BETS, MIN_LEG_PROBABILITY, MIN_COMBO_PROBABILITY,
+                """.formatted(NUMBER_OF_BETS, MIN_LEG_PROBABILITY, MIN_PAYOUT_MULTIPLE,
                         shortlistJson, positionsJson, NUMBER_OF_BETS, betSize, NUMBER_OF_BETS);
     }
 

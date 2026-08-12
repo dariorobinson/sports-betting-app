@@ -73,8 +73,9 @@ public class ComboService {
      *  (tennis first). Bounds Kalshi calls while still reaching ATP/WTA favorites. */
     private static final int SHORTLIST_MAX_SERIES_PER_COLLECTION = 4;
     /** Top-N strongest per-event favorites kept per collection before forming combinations — bounds
-     *  the combinatorial explosion (6 favorites → at most 15 pairs + 20 triples). */
-    private static final int SHORTLIST_FAVORITES_PER_COLLECTION = 6;
+     *  the combinatorial explosion. Higher than before because reaching the payout floor now often
+     *  needs 3-5 legs (strong favorites multiply slowly), so we need more legs to draw from. */
+    private static final int SHORTLIST_FAVORITES_PER_COLLECTION = 8;
     /** Cap on candidate leg-sets considered (per collection) after the probability filter. */
     private static final int SHORTLIST_MAX_LEGSETS = 20;
     /** Hard ceiling on how many candidates get RFQ-priced across the whole shortlist build — each
@@ -83,12 +84,14 @@ public class ComboService {
     /** Stop pricing candidates in a collection after this many consecutive failures — if its legs are
      *  being rejected (e.g. it structurally can't form the combos we generate), don't burn the budget. */
     private static final int SHORTLIST_MAX_CONSECUTIVE_FAILURES = 2;
-    /** Target combined probability to prioritize when choosing which candidates to price: just above
-     *  the combo floor, where the payout is best. Prevents the shortlist from filling with near-lock
-     *  combos (e.g. two ~95% NFL over/unders combine to ~90% but pay almost nothing) — those clear the
-     *  floor but aren't what we want. A small buffer above the floor also hedges against the real RFQ
-     *  quote coming back slightly worse than the product-of-legs estimate. */
-    private static final BigDecimal SHORTLIST_TARGET_PROBABILITY = new BigDecimal("0.65");
+    /** Sanity floor on a combo's combined probability — reject anything the market maker prices below
+     *  this (a >~2.5x payout on 70%+ legs would be an illiquid/degenerate quote, not a real edge).
+     *  Keeps results in the intended band: a strong-favorite combo that pays well, not a lottery ticket. */
+    private static final BigDecimal SHORTLIST_MIN_COMBO_PROBABILITY = new BigDecimal("0.40");
+    /** Buffer subtracted from the payout-implied probability ceiling when GENERATING candidates, so the
+     *  real RFQ quote (which can come back a bit worse than the product-of-legs estimate) still tends
+     *  to clear the payout floor. E.g. floor 1.6x → keep quotes ≤ 0.625; generate candidates ≤ 0.615. */
+    private static final BigDecimal SHORTLIST_CANDIDATE_PROB_BUFFER = new BigDecimal("0.01");
 
     private final KalshiApiClient client;
     private final ActiveComboLegTracker activeComboLegTracker;
@@ -220,20 +223,28 @@ public class ComboService {
      * for the autonomous scheduler to inject into its prompt — replacing the model's expensive
      * survey + per-candidate pricing round-trips. Strategy: enumerate sports combo collections, take
      * each event's strongest YES favorite whose implied probability clears {@code minLegProbPercent},
-     * form 2- and 3-leg combinations (within a single collection — Kalshi can't combine across
-     * collections) whose product-of-leg-probabilities clears {@code minComboProbPercent}, and RFQ-price
-     * the most promising via the existing {@link #priceCombo} path (no money risk — RFQs are deleted).
-     * Only real, quoted combos still clearing the combined floor are returned, safest (highest
-     * probability) first. Pricing is hard-capped at {@link #SHORTLIST_MAX_PRICING_ATTEMPTS}.
+     * then stack as MANY of those favorites (2..{@code maxLegs}) as it takes for the combined
+     * probability to fall to/under the payout ceiling implied by {@code minPayoutMultiple} — i.e. the
+     * combo pays at least that multiple — and RFQ-price the most promising via the existing
+     * {@link #priceCombo} path (no money risk — RFQs are deleted). Only real, quoted combos that
+     * actually clear the payout floor are returned, safest (fewest legs / highest probability among
+     * those that still hit the multiple) first. Pricing is hard-capped at
+     * {@link #SHORTLIST_MAX_PRICING_ATTEMPTS}.
      *
+     * @param minPayoutMultiple minimum payout multiple a combo must reach (e.g. 1.6 → combined
+     *                          probability must be ≤ 1/1.6 = 0.625)
+     * @param maxLegs          most legs a combo may have (add legs until the payout floor is met)
      * @param maxCandidates    soft target for how many priced candidates to try to return (also caps
      *                         pricing attempts together with {@link #SHORTLIST_MAX_PRICING_ATTEMPTS})
      * @param maxCollections   how many collections to survey
      */
     public List<PricedComboCandidate> buildPricedCandidateShortlist(
-            int minLegProbPercent, int minComboProbPercent, int maxCandidates, int maxCollections) {
+            int minLegProbPercent, BigDecimal minPayoutMultiple, int maxLegs,
+            int maxCandidates, int maxCollections) {
         BigDecimal minLeg = BigDecimal.valueOf(minLegProbPercent).movePointLeft(2);
-        BigDecimal minCombo = BigDecimal.valueOf(minComboProbPercent).movePointLeft(2);
+        // Payout ≈ 1/probability, so a min payout multiple is a MAX combined probability.
+        BigDecimal maxCombo = BigDecimal.ONE.divide(minPayoutMultiple, 4, RoundingMode.HALF_UP);
+        BigDecimal candidateCeiling = maxCombo.subtract(SHORTLIST_CANDIDATE_PROB_BUFFER);
         int pricingBudget = Math.min(Math.max(maxCandidates, 1), SHORTLIST_MAX_PRICING_ATTEMPTS);
 
         List<PricedComboCandidate> out = new ArrayList<>();
@@ -242,8 +253,9 @@ public class ComboService {
         List<ComboCollectionSummary> collections = listSportsCombos().stream()
                 .limit(Math.max(maxCollections, 1))
                 .toList();
-        log.info("Shortlist build: surveying {} sports combo collection(s), minLeg={}%, minCombo={}%, "
-                + "pricing budget={}", collections.size(), minLegProbPercent, minComboProbPercent, pricingBudget);
+        log.info("Shortlist build: surveying {} sports combo collection(s), minLeg={}%, minPayout={}x "
+                + "(combined ≤ {}), maxLegs={}, pricing budget={}", collections.size(), minLegProbPercent,
+                minPayoutMultiple.toPlainString(), maxCombo.toPlainString(), maxLegs, pricingBudget);
 
         // Give each collection a fair share of the pricing budget so one collection whose candidates
         // keep getting rejected can't starve the others (that happened in prod: 8 attempts all spent
@@ -256,7 +268,8 @@ public class ComboService {
                 break;
             }
             List<FavoriteLeg> favorites = strongestFavoritesInCollection(collection.collectionTicker(), minLeg);
-            List<List<FavoriteLeg>> legSets = candidateLegSets(favorites, minCombo);
+            List<List<FavoriteLeg>> legSets = candidateLegSets(
+                    favorites, SHORTLIST_MIN_COMBO_PROBABILITY, candidateCeiling, maxLegs);
 
             int perCollectionAttempts = 0;
             int consecutiveFailures = 0;
@@ -284,18 +297,23 @@ public class ComboService {
                     continue;
                 }
                 consecutiveFailures = 0;
+                // Keep only real quotes that actually pay the required multiple (combined ≤ maxCombo)
+                // and aren't an implausibly-cheap outlier (combined ≥ the sanity floor).
                 BigDecimal comboProb = parseDollar(priced.yesAskDollars());
-                if (priced.quoted() && comboProb != null && comboProb.compareTo(minCombo) >= 0) {
+                if (priced.quoted() && comboProb != null
+                        && comboProb.compareTo(maxCombo) <= 0
+                        && comboProb.compareTo(SHORTLIST_MIN_COMBO_PROBABILITY) >= 0) {
                     out.add(toCandidate(collection.collectionTicker(), legSet, priced));
                 }
             }
         }
 
-        // Present best-payout-first (lowest combined ask = highest payout multiple) — every candidate
-        // already clears the floor, so among them the model should see the best-paying ones first.
-        out.sort(Comparator.comparing(c -> parseDollarOrZero(c.yesAskDollars())));
-        log.info("Shortlist build: {} priced candidate(s) cleared the {}% combined floor after {} pricing "
-                + "attempt(s)", out.size(), minComboProbPercent, attempts);
+        // Present highest-probability-first among the qualifiers — every candidate already pays at
+        // least the required multiple, so the model should see the SAFEST-that-still-pays first.
+        out.sort(Comparator.comparing(
+                (PricedComboCandidate c) -> parseDollarOrZero(c.yesAskDollars())).reversed());
+        log.info("Shortlist build: {} priced candidate(s) reached the {}x payout floor after {} pricing "
+                + "attempt(s)", out.size(), minPayoutMultiple.toPlainString(), attempts);
         return out;
     }
 
@@ -313,8 +331,10 @@ public class ComboService {
         return favorites.stream().limit(SHORTLIST_FAVORITES_PER_COLLECTION).toList();
     }
 
-    /** Resolves a collection's legs; if there are too many to resolve at once, resolves a few series
-     *  (tennis first, so ATP/WTA favorites are reachable). */
+    /** Resolves a collection's legs, restricted to core moneyline (GAME/MATCH) series — the "team X
+     *  wins / player Y wins" markets this strategy is built on. Spread/total/prop series are skipped:
+     *  they're mostly near-locks or noise that can't form the strong-favorite combos we want. If the
+     *  collection is too big to resolve at once, resolves a few core series (tennis first). */
     private List<ComboLegEvent> resolveLegsForShortlist(String collectionTicker) {
         ComboLegsResponse resp;
         try {
@@ -323,29 +343,43 @@ public class ComboService {
             log.warn("Shortlist: resolving legs for {} failed: {}", collectionTicker, e.getMessage());
             return List.of();
         }
+        List<ComboLegEvent> resolved;
         if (resp.legs() != null) {
-            return resp.legs();
-        }
-        if (resp.legCountsBySeries() == null) {
+            resolved = resp.legs();
+        } else if (resp.legCountsBySeries() == null) {
             return List.of();
-        }
-        List<String> series = resp.legCountsBySeries().keySet().stream()
-                .sorted(Comparator.comparing((String s) -> !isTennisSeries(s)))
-                .limit(SHORTLIST_MAX_SERIES_PER_COLLECTION)
-                .toList();
-        List<ComboLegEvent> all = new ArrayList<>();
-        for (String seriesTicker : series) {
-            try {
-                ComboLegsResponse r = getComboLegs(collectionTicker, seriesTicker);
-                if (r.legs() != null) {
-                    all.addAll(r.legs());
+        } else {
+            List<String> series = resp.legCountsBySeries().keySet().stream()
+                    .filter(ComboService::isCoreMoneylineSeries)
+                    .sorted(Comparator.comparing((String s) -> !isTennisSeries(s)))
+                    .limit(SHORTLIST_MAX_SERIES_PER_COLLECTION)
+                    .toList();
+            List<ComboLegEvent> all = new ArrayList<>();
+            for (String seriesTicker : series) {
+                try {
+                    ComboLegsResponse r = getComboLegs(collectionTicker, seriesTicker);
+                    if (r.legs() != null) {
+                        all.addAll(r.legs());
+                    }
+                } catch (RuntimeException e) {
+                    log.warn("Shortlist: resolving series {} in {} failed: {}", seriesTicker, collectionTicker,
+                            e.getMessage());
                 }
-            } catch (RuntimeException e) {
-                log.warn("Shortlist: resolving series {} in {} failed: {}", seriesTicker, collectionTicker,
-                        e.getMessage());
             }
+            resolved = all;
         }
-        return all;
+        // Keep only core moneyline events (covers the small-collection path, which isn't series-filtered).
+        return resolved.stream()
+                .filter(l -> isCoreMoneylineSeries(leadingSeriesTicker(l.eventTicker())))
+                .toList();
+    }
+
+    /** Core moneyline series: "team/player wins" markets (ticker ends in GAME or MATCH), e.g.
+     *  KXNFLGAME, KXMLBGAME, KXWNBAGAME, KXATPMATCH, KXWTAMATCH. Excludes SPREAD/TOTAL/BTTS and player
+     *  props — those aren't the strong-favorite win combos this strategy targets. */
+    private static boolean isCoreMoneylineSeries(String seriesTicker) {
+        String s = seriesTicker == null ? "" : seriesTicker.toUpperCase();
+        return s.endsWith("GAME") || s.endsWith("MATCH");
     }
 
     private static boolean isTennisSeries(String seriesTicker) {
@@ -353,10 +387,12 @@ public class ComboService {
         return s.contains("ATP") || s.contains("WTA") || s.contains("TENNIS");
     }
 
-    /** A market priced at/above this is treated as degenerate — a settled or all-but-decided outcome
-     *  (a finished game often shows ~$1.00). Such a leg adds no real payout and, if the game is over,
-     *  makes the whole combo invalid on Kalshi — so it's not a usable "favorite". */
-    private static final BigDecimal DEGENERATE_PRICE_CEILING = new BigDecimal("0.97");
+    /** A market priced at/above this is treated as unusable as a leg — either a settled/all-but-decided
+     *  outcome (a finished game shows ~$1.00, and including a settled event makes the whole combo
+     *  invalid on Kalshi), OR a near-lock so strong it can't help reach the payout floor: a 0.95 leg
+     *  barely moves the combined probability, so no realistic number of them ever gets a combo down to
+     *  the ~0.625 needed for 1.6x. Legs must be strong favorites but not near-certainties: [0.70, 0.90). */
+    private static final BigDecimal DEGENERATE_PRICE_CEILING = new BigDecimal("0.90");
 
     /** The single strongest YES outcome across an event's ACTIVE markets (the favorite), or null if
      *  none clears the leg floor. Skips non-active markets: a finished/settled game still comes back
@@ -384,29 +420,41 @@ public class ComboService {
         return (best != null && best.prob().compareTo(minLeg) >= 0) ? best : null;
     }
 
-    /** All 2- and 3-leg combinations of the given favorites whose product-of-probabilities clears the
-     *  combined floor, most-probable first, capped to {@link #SHORTLIST_MAX_LEGSETS}. Each favorite is
-     *  from a distinct event, so combinations never double-pick the same game. */
-    private static List<List<FavoriteLeg>> candidateLegSets(List<FavoriteLeg> favs, BigDecimal minCombo) {
+    /** All combinations of the given favorites, of size 2..{@code maxLegs}, whose product-of-leg-
+     *  probabilities lands in [{@code minCombo}, {@code maxCombo}] — i.e. low enough to pay the required
+     *  multiple, but not implausibly low. Ordered so the FEWEST-leg, highest-probability qualifying
+     *  combos come first: that's "add just enough legs to hit the multiple," which keeps the combo as
+     *  safe as possible while still paying out. Capped to {@link #SHORTLIST_MAX_LEGSETS}. Each favorite
+     *  is from a distinct event, so combinations never double-pick the same game. */
+    private static List<List<FavoriteLeg>> candidateLegSets(List<FavoriteLeg> favs, BigDecimal minCombo,
+                                                            BigDecimal maxCombo, int maxLegs) {
         List<List<FavoriteLeg>> sets = new ArrayList<>();
         int n = favs.size();
-        for (int i = 0; i < n; i++) {
-            for (int j = i + 1; j < n; j++) {
-                BigDecimal p2 = favs.get(i).prob().multiply(favs.get(j).prob());
-                if (p2.compareTo(minCombo) >= 0) {
-                    sets.add(List.of(favs.get(i), favs.get(j)));
-                }
-                for (int k = j + 1; k < n; k++) {
-                    BigDecimal p3 = p2.multiply(favs.get(k).prob());
-                    if (p3.compareTo(minCombo) >= 0) {
-                        sets.add(List.of(favs.get(i), favs.get(j), favs.get(k)));
-                    }
+        int cap = Math.min(maxLegs, n);
+        // Enumerate subsets via bitmask (favs is bounded to SHORTLIST_FAVORITES_PER_COLLECTION, so this
+        // is at most a few hundred masks). Keep those with 2..cap legs whose product is in range.
+        for (int mask = 1; mask < (1 << n); mask++) {
+            int size = Integer.bitCount(mask);
+            if (size < 2 || size > cap) {
+                continue;
+            }
+            BigDecimal product = BigDecimal.ONE;
+            List<FavoriteLeg> legs = new ArrayList<>(size);
+            for (int i = 0; i < n; i++) {
+                if ((mask & (1 << i)) != 0) {
+                    FavoriteLeg f = favs.get(i);
+                    legs.add(f);
+                    product = product.multiply(f.prob());
                 }
             }
+            if (product.compareTo(minCombo) >= 0 && product.compareTo(maxCombo) <= 0) {
+                sets.add(legs);
+            }
         }
-        // Price the candidates nearest the target combined probability first (best payout that still
-        // clears the floor), not the safest ones — otherwise near-lock combos crowd out good payouts.
-        sets.sort(Comparator.comparing(s -> legSetProduct(s).subtract(SHORTLIST_TARGET_PROBABILITY).abs()));
+        // Fewest legs first, then highest probability (closest to the ceiling) — the safest combo that
+        // still pays the multiple, with the least stacking.
+        sets.sort(Comparator.comparingInt((List<FavoriteLeg> s) -> s.size())
+                .thenComparing(Comparator.comparing(ComboService::legSetProduct).reversed()));
         return sets.stream().limit(SHORTLIST_MAX_LEGSETS).toList();
     }
 
