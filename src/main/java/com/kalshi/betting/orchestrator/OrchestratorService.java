@@ -34,7 +34,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 /**
@@ -70,12 +69,14 @@ public class OrchestratorService {
      *  it. 10 exchanges is enough conversational memory for follow-up questions ("what did you say
      *  about the Lakers") without carrying the cost of the user's entire history indefinitely. */
     private static final int MAX_HISTORY_MESSAGES = 20;
-    /** Anthropic allows at most 4 cache_control breakpoints per request. System prompt + last tool
-     *  already use 2 (see below), leaving 2 spare — and since each iteration's tool-result message
-     *  is immutable once added to the growing conversation, every breakpoint we mark stays in the
-     *  request forever (there's no way to "unmark" an earlier one), so only the first this many
-     *  iterations may get one or the request eventually 400s ("maximum of 4 blocks with cache_control"). */
-    private static final int MAX_TOOL_LOOP_CACHE_BREAKPOINTS = 2;
+    /** Anthropic allows at most 4 cache_control breakpoints per request. Two are static (system
+     *  prompt + last tool definition); the remaining budget is used as a SLIDING window over the
+     *  most-recent tool-result messages (see {@link #runAgentLoop}). Rather than freezing breakpoints
+     *  at the first couple of iterations (which left everything after them uncached and reprocessed
+     *  every later iteration), the marker moves forward each turn so the whole growing prefix stays
+     *  cached and only the newest delta is written. 2 sliding markers keeps the total at the 4 ceiling
+     *  and adds resilience when a single turn emits many tool-result blocks. */
+    private static final int SLIDING_BREAKPOINTS = 2;
 
     private static final List<Class<?>> TOOL_CLASSES = List.of(
             ListSportsTool.class,
@@ -94,12 +95,34 @@ public class OrchestratorService {
             GetTeamAnalyticsTool.class,
             GetIndividualAnalyticsTool.class);
 
+    /** Reduced tool set for the autonomous combo-betting scheduler. The scheduler now pre-computes a
+     *  priced candidate shortlist and current positions in Java and injects them into the prompt
+     *  (see {@code AutoComboBettingScheduler}), so the model no longer surveys or prices from scratch
+     *  — it only researches legs, selects, and places. Shipping ~4 tool schemas instead of 15 shrinks
+     *  the cached prefix read on every loop iteration. PriceComboTool stays only as a fallback for the
+     *  model to sanity-check an alternative combination; PlaceComboBetTool actually places. */
+    public static final List<Class<?>> SCHEDULER_TOOL_CLASSES = List.of(
+            GetTeamAnalyticsTool.class,
+            GetIndividualAnalyticsTool.class,
+            PriceComboTool.class,
+            PlaceComboBetTool.class);
+
     private final AnthropicClient client;
     private final String systemPromptTemplate;
     private final Map<String, List<ChatMessage>> histories = new ConcurrentHashMap<>();
     private final Map<String, Class<?>> toolClassesByName = new LinkedHashMap<>();
 
     private record ChatMessage(String role, String content) {
+    }
+
+    /** Raw ingredients of one tool result, kept so the tool-result message (and its sliding cache
+     *  marker) can be rebuilt fresh each iteration instead of reusing an immutable block verbatim. */
+    private record RawResult(String toolUseId, String content, boolean isError) {
+    }
+
+    /** One completed loop turn: the assistant message (which requested tools) and the results of
+     *  running them. Re-emitted every iteration by {@link #assembleRequest}. */
+    private record LoopTurn(BetaMessage assistant, List<RawResult> results) {
     }
 
     public OrchestratorService(AnthropicClient client,
@@ -147,18 +170,12 @@ public class OrchestratorService {
 
         history.add(new ChatMessage("user", userMessage));
 
-        MessageCreateParams.Builder builder = newRequestBuilder();
+        List<ChatMessage> baseMessages;
         synchronized (history) {
-            for (ChatMessage msg : history) {
-                if ("user".equals(msg.role())) {
-                    builder.addUserMessage(msg.content());
-                } else {
-                    builder.addAssistantMessage(msg.content());
-                }
-            }
+            baseMessages = new ArrayList<>(history);
         }
 
-        String responseText = runAgentLoop(userId, builder);
+        String responseText = runAgentLoop(userId, TOOL_CLASSES, baseMessages);
 
         if (!responseText.isEmpty()) {
             synchronized (history) {
@@ -189,13 +206,24 @@ public class OrchestratorService {
      * @param logId identifies this run in logs the same way {@code userId} does for {@link #chat}
      */
     public String chatOnce(String logId, String userMessage) {
-        MessageCreateParams.Builder builder = newRequestBuilder().addUserMessage(userMessage);
-        return runAgentLoop(logId, builder);
+        return chatOnce(logId, userMessage, TOOL_CLASSES);
     }
 
-    /** System prompt + tool definitions, with cache breakpoints — identical setup shared by both
-     *  {@link #chat} (persisted history) and {@link #chatOnce} (single-turn, no history). */
-    private MessageCreateParams.Builder newRequestBuilder() {
+    /**
+     * Single-turn variant that runs with a caller-supplied tool set instead of all {@link #TOOL_CLASSES}.
+     * The autonomous combo-betting scheduler passes {@link #SCHEDULER_TOOL_CLASSES} (a small subset),
+     * since it injects a pre-priced candidate shortlist + positions into the prompt and no longer needs
+     * the survey/pricing tools — fewer tool schemas means a smaller cached prefix on every iteration.
+     */
+    public String chatOnce(String logId, String userMessage, List<Class<?>> toolClasses) {
+        return runAgentLoop(logId, toolClasses, List.of(new ChatMessage("user", userMessage)));
+    }
+
+    /** System prompt + tool definitions only (NO messages) — the static, cacheable prefix shared by
+     *  every request. Messages are added separately by {@link #assembleRequest} so the tool-result
+     *  cache markers can slide forward each iteration. Cache breakpoints here: the system block (1)
+     *  and the last tool definition (1). */
+    private MessageCreateParams.Builder newRequestBuilder(List<Class<?>> toolClasses) {
         // System prompt and tools are identical on every call (within the same day) — mark cache
         // breakpoints on both so Anthropic serves them from cache instead of full input-token price
         // on every request, including every iteration of the tool-calling loop below.
@@ -220,27 +248,84 @@ public class OrchestratorService {
                 // than just padding maxTokens and hoping it's enough headroom.
                 .thinking(BetaThinkingConfigDisabled.builder().build())
                 .system(MessageCreateParams.System.ofBetaTextBlockParams(List.of(systemBlock)));
-        for (int i = 0; i < TOOL_CLASSES.size(); i++) {
-            boolean isLastTool = i == TOOL_CLASSES.size() - 1;
-            builder.addTool(NonStrictTools.from(TOOL_CLASSES.get(i), isLastTool));
+        for (int i = 0; i < toolClasses.size(); i++) {
+            boolean isLastTool = i == toolClasses.size() - 1;
+            builder.addTool(NonStrictTools.from(toolClasses.get(i), isLastTool));
         }
         return builder;
     }
 
+    /** Assembles a full request: the static prefix ({@link #newRequestBuilder}) + the base messages
+     *  (conversation history for {@link #chat}, or the single user turn for {@link #chatOnce}) + every
+     *  completed loop turn (assistant message + its tool results). A cache breakpoint is applied to the
+     *  LAST tool-result block of only the newest {@link #SLIDING_BREAKPOINTS} turns — so as the loop
+     *  grows, the marker slides forward and the whole prior prefix stays a cache hit while only the
+     *  newest delta is written. Rebuilt fresh each iteration (rather than mutating one builder) so the
+     *  marker can move; older turns are re-emitted byte-identical, which is what keeps them cache-hits. */
+    private MessageCreateParams.Builder assembleRequest(List<Class<?>> toolClasses,
+                                                         List<ChatMessage> baseMessages,
+                                                         List<LoopTurn> turns) {
+        MessageCreateParams.Builder builder = newRequestBuilder(toolClasses);
+        for (ChatMessage msg : baseMessages) {
+            if ("user".equals(msg.role())) {
+                builder.addUserMessage(msg.content());
+            } else {
+                builder.addAssistantMessage(msg.content());
+            }
+        }
+        int firstCachedTurn = Math.max(0, turns.size() - SLIDING_BREAKPOINTS);
+        for (int i = 0; i < turns.size(); i++) {
+            LoopTurn turn = turns.get(i);
+            builder.addMessage(turn.assistant());
+            builder.addMessage(toolResultMessage(turn.results(), i >= firstCachedTurn));
+        }
+        return builder;
+    }
+
+    /** Builds the USER message carrying a turn's tool results; marks the last result block as a cache
+     *  breakpoint when {@code cacheLast} is true (the sliding-window marker). */
+    private static BetaMessageParam toolResultMessage(List<RawResult> results, boolean cacheLast) {
+        List<BetaContentBlockParam> blocks = new ArrayList<>();
+        for (int j = 0; j < results.size(); j++) {
+            boolean cache = cacheLast && j == results.size() - 1;
+            blocks.add(BetaContentBlockParam.ofToolResult(toBlock(results.get(j), cache)));
+        }
+        return BetaMessageParam.builder()
+                .role(BetaMessageParam.Role.USER)
+                .contentOfBetaContentBlockParams(blocks)
+                .build();
+    }
+
+    private static BetaToolResultBlockParam toBlock(RawResult r, boolean cache) {
+        BetaToolResultBlockParam.Builder b = BetaToolResultBlockParam.builder()
+                .toolUseId(r.toolUseId())
+                .content(r.content());
+        if (r.isError()) {
+            b.isError(true);
+        }
+        if (cache) {
+            b.cacheControl(BetaCacheControlEphemeral.builder().build());
+        }
+        return b.build();
+    }
+
     /** The actual tool-calling loop — shared by {@link #chat} and {@link #chatOnce}. {@code logId}
      *  is just a label for log lines, not necessarily a real Discord user id (see {@link #chatOnce}). */
-    private String runAgentLoop(String logId, MessageCreateParams.Builder builder) {
-        AtomicReference<String> finalResponse = new AtomicReference<>("");
+    private String runAgentLoop(String logId, List<Class<?>> toolClasses, List<ChatMessage> baseMessages) {
+        String finalResponse = "";
         Map<String, Integer> toolCallCounts = new LinkedHashMap<>();
         int iterationsUsed = 0;
         // Aggregate token usage across the loop so cost is visible from the normal INFO logs (input
         // is the dominant driver — the whole conversation is resent each iteration; cache_read is
         // billed at ~10% of input, cache_write at ~125%, so the split matters for reading the bill).
         long inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0;
-        MessageCreateParams.Builder currentBuilder = builder;
+        List<LoopTurn> turns = new ArrayList<>();
         for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
             iterationsUsed = iteration + 1;
-            MessageCreateParams params = currentBuilder.build();
+            // Rebuild the whole request each iteration so the sliding cache marker can move forward
+            // (see assembleRequest). Everything below the newest marker is a cache read; only the
+            // newest turn is written.
+            MessageCreateParams params = assembleRequest(toolClasses, baseMessages, turns).build();
             BetaMessage message = client.beta().messages().create(params);
 
             BetaUsage usage = message.usage();
@@ -257,14 +342,15 @@ public class OrchestratorService {
             List<BetaToolUseBlock> toolUses = new ArrayList<>();
             boolean sawText = false;
             for (BetaContentBlock block : message.content()) {
-                block.toolUse().ifPresent(t -> {
+                if (block.toolUse().isPresent()) {
+                    BetaToolUseBlock t = block.toolUse().get();
                     log.info("[{}] Orchestrator calling tool: {}", logId, t.name());
                     toolUses.add(t);
                     toolCallCounts.merge(t.name(), 1, Integer::sum);
-                });
+                }
                 if (block.text().isPresent()) {
                     sawText = true;
-                    finalResponse.set(block.text().get().text());
+                    finalResponse = block.text().get().text();
                 }
             }
 
@@ -288,23 +374,11 @@ public class OrchestratorService {
                 break;
             }
 
-            // "Mandatory research" (instructions.md) means most replies make several tool calls —
-            // each loop iteration below resends everything accumulated so far. Mark a cache
-            // breakpoint on the last tool result of the first couple of iterations (see
-            // MAX_TOOL_LOOP_CACHE_BREAKPOINTS) so later iterations can reuse that cached prefix
-            // instead of reprocessing the whole growing exchange from scratch every time.
-            List<BetaContentBlockParam> resultBlocks = new ArrayList<>();
-            for (int t = 0; t < toolUses.size(); t++) {
-                boolean isLastToolResult = t == toolUses.size() - 1;
-                boolean cacheBreakpoint = isLastToolResult && iteration < MAX_TOOL_LOOP_CACHE_BREAKPOINTS;
-                resultBlocks.add(BetaContentBlockParam.ofToolResult(runTool(toolUses.get(t), cacheBreakpoint)));
+            List<RawResult> results = new ArrayList<>();
+            for (BetaToolUseBlock toolUse : toolUses) {
+                results.add(runTool(toolUse));
             }
-            BetaMessageParam toolResultMessage = BetaMessageParam.builder()
-                    .role(BetaMessageParam.Role.USER)
-                    .contentOfBetaContentBlockParams(resultBlocks)
-                    .build();
-
-            currentBuilder = params.toBuilder().addMessage(message).addMessage(toolResultMessage);
+            turns.add(new LoopTurn(message, results));
         }
 
         // One cheap summary line per turn (not per-iteration) so a budget-exhaustion cycle is
@@ -315,16 +389,17 @@ public class OrchestratorService {
                 logId, iterationsUsed, toolCallCounts,
                 inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
 
-        String responseText = finalResponse.get();
+        String responseText = finalResponse;
         if (responseText.isEmpty()) {
             // The loop ended (almost always by hitting MAX_TOOL_ITERATIONS with tool calls still
             // pending) without the model ever producing a text turn — silently returning nothing is
             // worse than a rushed answer, so force one more call with NO tools attached, so the
-            // model physically cannot keep researching and must respond with text.
+            // model physically cannot keep researching and must respond with text. Reassemble the
+            // full accumulated conversation (all turns) to hand it the complete context.
             log.warn("[{}] Tool loop ended without a final text response (likely hit the {}-iteration "
                     + "cap) — forcing a no-tools synthesis call instead of returning nothing.",
                     logId, MAX_TOOL_ITERATIONS);
-            responseText = forceSynthesis(currentBuilder);
+            responseText = forceSynthesis(assembleRequest(toolClasses, baseMessages, turns));
         }
 
         return responseText;
@@ -387,38 +462,23 @@ public class OrchestratorService {
     /**
      * Instantiates and runs the tool class matching this tool_use block's name, using
      * {@link BetaToolUseBlock#input(Class)} to parse arguments — the same public method
-     * {@code BetaToolRunner} uses internally, so parsing behavior matches exactly.
-     *
-     * @param cacheBreakpoint marks this result as a prompt-cache breakpoint (see call site) —
-     *                        should be true only for the last tool result in a given loop iteration.
+     * {@code BetaToolRunner} uses internally, so parsing behavior matches exactly. Returns the raw
+     * result (id/content/error); the tool-result message and any cache marker are built later in
+     * {@link #toolResultMessage} so the sliding cache window can be applied fresh each iteration.
      */
-    private BetaToolResultBlockParam runTool(BetaToolUseBlock toolUse, boolean cacheBreakpoint) {
+    private RawResult runTool(BetaToolUseBlock toolUse) {
         Class<?> toolClass = toolClassesByName.get(toolUse.name());
         if (toolClass == null) {
             log.error("Orchestrator tool dispatch failed: unknown tool '{}'", toolUse.name());
-            return BetaToolResultBlockParam.builder()
-                    .toolUseId(toolUse.id())
-                    .content("Error: Tool '" + toolUse.name() + "' not found")
-                    .isError(true)
-                    .cacheControl(cacheBreakpoint ? BetaCacheControlEphemeral.builder().build() : null)
-                    .build();
+            return new RawResult(toolUse.id(), "Error: Tool '" + toolUse.name() + "' not found", true);
         }
         try {
             Object instance = toolUse.input(toolClass);
             String output = ((Supplier<?>) instance).get().toString();
-            return BetaToolResultBlockParam.builder()
-                    .toolUseId(toolUse.id())
-                    .content(output)
-                    .cacheControl(cacheBreakpoint ? BetaCacheControlEphemeral.builder().build() : null)
-                    .build();
+            return new RawResult(toolUse.id(), output, false);
         } catch (Exception e) {
             log.error("Orchestrator tool dispatch failed for '{}'", toolUse.name(), e);
-            return BetaToolResultBlockParam.builder()
-                    .toolUseId(toolUse.id())
-                    .content("Error: " + e.getMessage())
-                    .isError(true)
-                    .cacheControl(cacheBreakpoint ? BetaCacheControlEphemeral.builder().build() : null)
-                    .build();
+            return new RawResult(toolUse.id(), "Error: " + e.getMessage(), true);
         }
     }
 }

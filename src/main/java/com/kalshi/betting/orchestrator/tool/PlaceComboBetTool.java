@@ -32,11 +32,13 @@ public class PlaceComboBetTool implements Supplier<String> {
 
     private static final Logger log = LoggerFactory.getLogger(PlaceComboBetTool.class);
 
-    @JsonPropertyDescription("Combo collection ticker, from ListSportsCombosTool")
+    @JsonPropertyDescription("Combo collection ticker — from a pre-priced candidate you were given, "
+            + "or from ListSportsCombosTool")
     public String collectionTicker;
 
-    @JsonPropertyDescription("The specific legs to combine: each needs eventTicker, marketTicker "
-            + "(both from GetComboLegsTool), and side (YES or NO)")
+    @JsonPropertyDescription("The specific legs to combine: each needs eventTicker, marketTicker, and "
+            + "side (YES or NO) — copy them verbatim from a pre-priced candidate you were given, or "
+            + "from GetComboLegsTool")
     public List<LegSelection> legs;
 
     @JsonPropertyDescription("The exact dollar amount to bet — must be a figure that was actually "

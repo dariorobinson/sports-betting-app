@@ -9,6 +9,7 @@ import com.kalshi.betting.client.dto.EventData;
 import com.kalshi.betting.client.dto.MultivariateEventCollection;
 import com.kalshi.betting.client.dto.Quote;
 import com.kalshi.betting.client.dto.TickerPair;
+import com.kalshi.betting.util.ImpliedProbability;
 import com.kalshi.betting.web.dto.*;
 import com.kalshi.betting.ws.QuoteExecutionSignal;
 import com.kalshi.betting.ws.dto.QuoteExecutedMsg;
@@ -19,6 +20,7 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -65,6 +67,19 @@ public class ComboService {
      *  it resting indefinitely (this is exactly the "stuck pending order" failure mode to avoid). */
     private static final int EXECUTION_POLL_ATTEMPTS = 10;
     private static final long EXECUTION_POLL_INTERVAL_MILLIS = 1500;
+
+    // ---- Pre-priced candidate shortlist (buildPricedCandidateShortlist) ----
+    /** When a collection has too many legs to resolve at once, how many of its series to resolve
+     *  (tennis first). Bounds Kalshi calls while still reaching ATP/WTA favorites. */
+    private static final int SHORTLIST_MAX_SERIES_PER_COLLECTION = 4;
+    /** Top-N strongest per-event favorites kept per collection before forming combinations — bounds
+     *  the combinatorial explosion (6 favorites → at most 15 pairs + 20 triples). */
+    private static final int SHORTLIST_FAVORITES_PER_COLLECTION = 6;
+    /** Cap on candidate leg-sets considered (per collection) after the probability filter. */
+    private static final int SHORTLIST_MAX_LEGSETS = 20;
+    /** Hard ceiling on how many candidates get RFQ-priced across the whole shortlist build — each
+     *  pricing call is a real (money-free) RFQ round-trip, so this bounds latency and Kalshi load. */
+    private static final int SHORTLIST_MAX_PRICING_ATTEMPTS = 8;
 
     private final KalshiApiClient client;
     private final ActiveComboLegTracker activeComboLegTracker;
@@ -189,6 +204,210 @@ public class ComboService {
         } finally {
             cleanupRfq(attempt.rfqId());
         }
+    }
+
+    /**
+     * Deterministically (no model) builds a bounded shortlist of already-RFQ-priced combo candidates
+     * for the autonomous scheduler to inject into its prompt — replacing the model's expensive
+     * survey + per-candidate pricing round-trips. Strategy: enumerate sports combo collections, take
+     * each event's strongest YES favorite whose implied probability clears {@code minLegProbPercent},
+     * form 2- and 3-leg combinations (within a single collection — Kalshi can't combine across
+     * collections) whose product-of-leg-probabilities clears {@code minComboProbPercent}, and RFQ-price
+     * the most promising via the existing {@link #priceCombo} path (no money risk — RFQs are deleted).
+     * Only real, quoted combos still clearing the combined floor are returned, safest (highest
+     * probability) first. Pricing is hard-capped at {@link #SHORTLIST_MAX_PRICING_ATTEMPTS}.
+     *
+     * @param maxCandidates    soft target for how many priced candidates to try to return (also caps
+     *                         pricing attempts together with {@link #SHORTLIST_MAX_PRICING_ATTEMPTS})
+     * @param maxCollections   how many collections to survey
+     */
+    public List<PricedComboCandidate> buildPricedCandidateShortlist(
+            int minLegProbPercent, int minComboProbPercent, int maxCandidates, int maxCollections) {
+        BigDecimal minLeg = BigDecimal.valueOf(minLegProbPercent).movePointLeft(2);
+        BigDecimal minCombo = BigDecimal.valueOf(minComboProbPercent).movePointLeft(2);
+        int pricingBudget = Math.min(Math.max(maxCandidates, 1), SHORTLIST_MAX_PRICING_ATTEMPTS);
+
+        List<PricedComboCandidate> out = new ArrayList<>();
+        int attempts = 0;
+
+        List<ComboCollectionSummary> collections = listSportsCombos().stream()
+                .limit(Math.max(maxCollections, 1))
+                .toList();
+        log.info("Shortlist build: surveying {} sports combo collection(s), minLeg={}%, minCombo={}%, "
+                + "pricing budget={}", collections.size(), minLegProbPercent, minComboProbPercent, pricingBudget);
+
+        for (ComboCollectionSummary collection : collections) {
+            if (attempts >= pricingBudget) {
+                break;
+            }
+            List<FavoriteLeg> favorites = strongestFavoritesInCollection(collection.collectionTicker(), minLeg);
+            List<List<FavoriteLeg>> legSets = candidateLegSets(favorites, minCombo);
+
+            for (List<FavoriteLeg> legSet : legSets) {
+                if (attempts >= pricingBudget) {
+                    break;
+                }
+                List<LegSelection> selections = legSet.stream()
+                        .map(f -> new LegSelection(f.eventTicker(), f.marketTicker(), f.side()))
+                        .toList();
+                attempts++;
+                ComboPriceResponse priced;
+                try {
+                    priced = priceCombo(collection.collectionTicker(), selections);
+                } catch (RuntimeException e) {
+                    log.warn("Shortlist: pricing a candidate in {} failed: {}",
+                            collection.collectionTicker(), e.getMessage());
+                    continue;
+                }
+                BigDecimal comboProb = parseDollar(priced.yesAskDollars());
+                if (priced.quoted() && comboProb != null && comboProb.compareTo(minCombo) >= 0) {
+                    out.add(toCandidate(collection.collectionTicker(), legSet, priced));
+                }
+            }
+        }
+
+        out.sort(Comparator.comparing(
+                (PricedComboCandidate c) -> parseDollarOrZero(c.yesAskDollars())).reversed());
+        log.info("Shortlist build: {} priced candidate(s) cleared the {}% combined floor after {} pricing "
+                + "attempt(s)", out.size(), minComboProbPercent, attempts);
+        return out;
+    }
+
+    /** One collection's strongest per-event YES favorites (one per event) that individually clear the
+     *  leg floor, capped to {@link #SHORTLIST_FAVORITES_PER_COLLECTION}, strongest first. */
+    private List<FavoriteLeg> strongestFavoritesInCollection(String collectionTicker, BigDecimal minLeg) {
+        List<FavoriteLeg> favorites = new ArrayList<>();
+        for (ComboLegEvent leg : resolveLegsForShortlist(collectionTicker)) {
+            FavoriteLeg fav = strongestFavorite(leg, minLeg);
+            if (fav != null) {
+                favorites.add(fav);
+            }
+        }
+        favorites.sort(Comparator.comparing(FavoriteLeg::prob).reversed());
+        return favorites.stream().limit(SHORTLIST_FAVORITES_PER_COLLECTION).toList();
+    }
+
+    /** Resolves a collection's legs; if there are too many to resolve at once, resolves a few series
+     *  (tennis first, so ATP/WTA favorites are reachable). */
+    private List<ComboLegEvent> resolveLegsForShortlist(String collectionTicker) {
+        ComboLegsResponse resp;
+        try {
+            resp = getComboLegs(collectionTicker, null);
+        } catch (RuntimeException e) {
+            log.warn("Shortlist: resolving legs for {} failed: {}", collectionTicker, e.getMessage());
+            return List.of();
+        }
+        if (resp.legs() != null) {
+            return resp.legs();
+        }
+        if (resp.legCountsBySeries() == null) {
+            return List.of();
+        }
+        List<String> series = resp.legCountsBySeries().keySet().stream()
+                .sorted(Comparator.comparing((String s) -> !isTennisSeries(s)))
+                .limit(SHORTLIST_MAX_SERIES_PER_COLLECTION)
+                .toList();
+        List<ComboLegEvent> all = new ArrayList<>();
+        for (String seriesTicker : series) {
+            try {
+                ComboLegsResponse r = getComboLegs(collectionTicker, seriesTicker);
+                if (r.legs() != null) {
+                    all.addAll(r.legs());
+                }
+            } catch (RuntimeException e) {
+                log.warn("Shortlist: resolving series {} in {} failed: {}", seriesTicker, collectionTicker,
+                        e.getMessage());
+            }
+        }
+        return all;
+    }
+
+    private static boolean isTennisSeries(String seriesTicker) {
+        String s = seriesTicker == null ? "" : seriesTicker.toUpperCase();
+        return s.contains("ATP") || s.contains("WTA") || s.contains("TENNIS");
+    }
+
+    /** The single strongest YES outcome across an event's markets (the favorite), or null if none
+     *  clears the leg floor. YES-only keeps leg labels clean (the favored team's name). */
+    private static FavoriteLeg strongestFavorite(ComboLegEvent leg, BigDecimal minLeg) {
+        if (leg.game() == null || leg.game().markets() == null) {
+            return null;
+        }
+        FavoriteLeg best = null;
+        for (MarketSummary market : leg.game().markets()) {
+            BigDecimal yesProb = parseDollar(market.yesAskDollars());
+            if (yesProb == null) {
+                continue;
+            }
+            if (best == null || yesProb.compareTo(best.prob()) > 0) {
+                best = new FavoriteLeg(leg.eventTicker(), market.ticker(), "YES",
+                        market.yesLabel(), yesProb);
+            }
+        }
+        return (best != null && best.prob().compareTo(minLeg) >= 0) ? best : null;
+    }
+
+    /** All 2- and 3-leg combinations of the given favorites whose product-of-probabilities clears the
+     *  combined floor, most-probable first, capped to {@link #SHORTLIST_MAX_LEGSETS}. Each favorite is
+     *  from a distinct event, so combinations never double-pick the same game. */
+    private static List<List<FavoriteLeg>> candidateLegSets(List<FavoriteLeg> favs, BigDecimal minCombo) {
+        List<List<FavoriteLeg>> sets = new ArrayList<>();
+        int n = favs.size();
+        for (int i = 0; i < n; i++) {
+            for (int j = i + 1; j < n; j++) {
+                BigDecimal p2 = favs.get(i).prob().multiply(favs.get(j).prob());
+                if (p2.compareTo(minCombo) >= 0) {
+                    sets.add(List.of(favs.get(i), favs.get(j)));
+                }
+                for (int k = j + 1; k < n; k++) {
+                    BigDecimal p3 = p2.multiply(favs.get(k).prob());
+                    if (p3.compareTo(minCombo) >= 0) {
+                        sets.add(List.of(favs.get(i), favs.get(j), favs.get(k)));
+                    }
+                }
+            }
+        }
+        sets.sort(Comparator.comparing(ComboService::legSetProduct).reversed());
+        return sets.stream().limit(SHORTLIST_MAX_LEGSETS).toList();
+    }
+
+    private static BigDecimal legSetProduct(List<FavoriteLeg> legSet) {
+        BigDecimal p = BigDecimal.ONE;
+        for (FavoriteLeg f : legSet) {
+            p = p.multiply(f.prob());
+        }
+        return p;
+    }
+
+    private static PricedComboCandidate toCandidate(String collectionTicker, List<FavoriteLeg> legSet,
+                                                     ComboPriceResponse priced) {
+        List<CandidateLeg> legs = legSet.stream()
+                .map(f -> new CandidateLeg(f.eventTicker(), f.marketTicker(), f.side(), f.label(),
+                        ImpliedProbability.fromDollarPrice(f.prob().toPlainString())))
+                .toList();
+        return new PricedComboCandidate(collectionTicker, legs,
+                priced.yesAskImpliedProbability(), priced.impliedYesPayoutMultiple(), priced.yesAskDollars());
+    }
+
+    private static BigDecimal parseDollar(String s) {
+        if (s == null || s.isBlank()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(s);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static BigDecimal parseDollarOrZero(String s) {
+        BigDecimal v = parseDollar(s);
+        return v == null ? BigDecimal.ZERO : v;
+    }
+
+    /** A single event's favored YES outcome, with its market-implied probability. */
+    private record FavoriteLeg(String eventTicker, String marketTicker, String side, String label,
+                               BigDecimal prob) {
     }
 
     /**
