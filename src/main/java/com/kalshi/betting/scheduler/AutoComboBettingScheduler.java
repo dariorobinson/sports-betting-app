@@ -5,6 +5,7 @@ import com.kalshi.betting.orchestrator.OrchestratorService;
 import com.kalshi.betting.orchestrator.ToolServices;
 import com.kalshi.betting.service.ComboService;
 import com.kalshi.betting.service.PortfolioService;
+import com.kalshi.betting.web.dto.PositionsView;
 import com.kalshi.betting.web.dto.PricedComboCandidate;
 import net.dv8tion.jda.api.JDA;
 import org.slf4j.Logger;
@@ -16,7 +17,9 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Autonomously PLACES real combo bets twice a day — this actually risks real money with no human
@@ -116,25 +119,33 @@ public class AutoComboBettingScheduler {
             log.info("Running autonomous combo betting for user {} — balance=${}, betSize=${}",
                     authorizedUserId, balance, betSize);
 
+            // Fetch positions ONCE and reuse: both to exclude already-committed legs from the
+            // shortlist (so we stop proposing combos the model must reject for leg-reuse) and to
+            // inject into the prompt as a safety-net.
+            PositionsView positions = portfolioService.getPositions();
+            Set<String> committedEvents = committedEventTickers(positions);
+
             // Do the expensive survey + candidate pricing in Java (deterministic, no model) so the
             // model only has to select and place — this is the main Anthropic cost saving. K = 2×
-            // the target so the model has real alternatives to choose among.
+            // the target so the model has real alternatives to choose among. Candidates are built only
+            // from events NOT already committed, and are leg-disjoint from each other.
             List<PricedComboCandidate> shortlist = comboService.buildPricedCandidateShortlist(
                     MIN_LEG_PROBABILITY, new BigDecimal(MIN_PAYOUT_MULTIPLE), MAX_COMBO_LEGS,
-                    NUMBER_OF_BETS * 2, MAX_COLLECTIONS_TO_SURVEY);
+                    NUMBER_OF_BETS * 2, MAX_COLLECTIONS_TO_SURVEY, committedEvents);
 
             if (shortlist.isEmpty()) {
-                // No qualifying combos priced — don't spend a single Anthropic token this cycle.
-                log.info("Autonomous combo betting: no qualifying combos this cycle — skipping the model call.");
-                response = "Autonomous combo betting: no combos reached the " + MIN_PAYOUT_MULTIPLE
-                        + "x payout floor with " + MIN_LEG_PROBABILITY + "%+ legs this cycle (checked "
+                // No qualifying NEW combos priced — don't spend a single Anthropic token this cycle.
+                log.info("Autonomous combo betting: no qualifying new combos this cycle — skipping the model call.");
+                response = "Autonomous combo betting: no NEW combos reached the " + MIN_PAYOUT_MULTIPLE
+                        + "x payout floor with " + MIN_LEG_PROBABILITY + "%+ legs this cycle (excluded "
+                        + committedEvents.size() + " already-committed events across "
                         + MAX_COLLECTIONS_TO_SURVEY + " collections). No bets placed.";
                 notifyUser(jda, response);
                 return response;
             }
 
             String shortlistJson = ToolServices.toJson(shortlist);
-            String positionsJson = ToolServices.toJson(portfolioService.getPositions());
+            String positionsJson = ToolServices.toJson(positions);
 
             // chatOnce, not chat: this cycle is fully self-contained, so it gets no benefit from
             // persisted conversation memory — persisting it would resend every past cycle's
@@ -179,12 +190,13 @@ public class AutoComboBettingScheduler {
                 head-to-head) for the teams/players in their legs — each candidate leg has a `label` \
                 to identify who to look up. This is the judgment step: prefer candidates the stats \
                 actually support, not just the raw price.
-                2. Exclude any candidate whose leg's event is already held directly OR already appears \
-                in another active combo's `underlyingLegEventTickers` in your positions above — never \
-                reuse a leg across combos. Some existing combo positions show \
-                `underlyingLegEventTickers` as null; that's a PERMANENT, KNOWN data gap (Kalshi can't \
-                look up an old combo's legs), NOT a reason to skip anything — just check what you can \
-                and move on.
+                2. These candidates were ALREADY filtered in code to exclude anything in your \
+                portfolio, and they're leg-disjoint from each other, so normally there's nothing to \
+                reject here. As a safety net only: if you still spot a candidate whose leg's event \
+                appears in your positions' `underlyingLegEventTickers` above, skip it. Some positions \
+                show `underlyingLegEventTickers` as null — that's a PERMANENT, KNOWN data gap, NOT a \
+                reason to skip anything. Also: do not place two of YOUR bets this cycle that share a \
+                leg with each other.
                 3. The shortlist is already ordered safest-first (highest combined probability among \
                 combos that still hit the payout floor). Every candidate already pays enough, so \
                 don't chase payout — just pick the ones the analytics most support, favoring the \
@@ -210,6 +222,32 @@ public class AutoComboBettingScheduler {
                 actually actionable (e.g. a real leg conflict found) — just the bottom line per bet.\
                 """.formatted(NUMBER_OF_BETS, MIN_LEG_PROBABILITY, MIN_PAYOUT_MULTIPLE,
                         shortlistJson, positionsJson, NUMBER_OF_BETS, betSize, NUMBER_OF_BETS);
+    }
+
+    /** Every event ticker already tied up in the portfolio and therefore off-limits as a new combo
+     *  leg: each market position's own event, the underlying legs of any combo we placed (tracked),
+     *  and each event position. Combos placed before leg-tracking have null underlying legs — those
+     *  can't be excluded (nothing to match on), the one known, unavoidable gap. */
+    private static Set<String> committedEventTickers(PositionsView positions) {
+        Set<String> committed = new HashSet<>();
+        if (positions.marketPositions() != null) {
+            positions.marketPositions().forEach(mp -> {
+                if (mp.eventTicker() != null) {
+                    committed.add(mp.eventTicker());
+                }
+                if (mp.underlyingLegEventTickers() != null) {
+                    committed.addAll(mp.underlyingLegEventTickers());
+                }
+            });
+        }
+        if (positions.eventPositions() != null) {
+            positions.eventPositions().forEach(ep -> {
+                if (ep.eventTicker() != null) {
+                    committed.add(ep.eventTicker());
+                }
+            });
+        }
+        return committed;
     }
 
     private void notifyUser(JDA jda, String message) {

@@ -20,7 +20,10 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -240,71 +243,90 @@ public class ComboService {
      */
     public List<PricedComboCandidate> buildPricedCandidateShortlist(
             int minLegProbPercent, BigDecimal minPayoutMultiple, int maxLegs,
-            int maxCandidates, int maxCollections) {
+            int maxCandidates, int maxCollections, Set<String> excludeEventTickers) {
         BigDecimal minLeg = BigDecimal.valueOf(minLegProbPercent).movePointLeft(2);
         // Payout ≈ 1/probability, so a min payout multiple is a MAX combined probability.
         BigDecimal maxCombo = BigDecimal.ONE.divide(minPayoutMultiple, 4, RoundingMode.HALF_UP);
         BigDecimal candidateCeiling = maxCombo.subtract(SHORTLIST_CANDIDATE_PROB_BUFFER);
         int pricingBudget = Math.min(Math.max(maxCandidates, 1), SHORTLIST_MAX_PRICING_ATTEMPTS);
-
-        List<PricedComboCandidate> out = new ArrayList<>();
-        int attempts = 0;
+        Set<String> exclude = excludeEventTickers == null ? Set.of() : excludeEventTickers;
 
         List<ComboCollectionSummary> collections = listSportsCombos().stream()
                 .limit(Math.max(maxCollections, 1))
                 .toList();
         log.info("Shortlist build: surveying {} sports combo collection(s), minLeg={}%, minPayout={}x "
-                + "(combined ≤ {}), maxLegs={}, pricing budget={}", collections.size(), minLegProbPercent,
-                minPayoutMultiple.toPlainString(), maxCombo.toPlainString(), maxLegs, pricingBudget);
+                + "(combined ≤ {}), maxLegs={}, pricing budget={}, excluding {} committed event(s)",
+                collections.size(), minLegProbPercent, minPayoutMultiple.toPlainString(),
+                maxCombo.toPlainString(), maxLegs, pricingBudget, exclude.size());
 
-        // Give each collection a fair share of the pricing budget so one collection whose candidates
-        // keep getting rejected can't starve the others (that happened in prod: 8 attempts all spent
-        // on one collection, the other two never tried).
-        int maxPerCollection = Math.max(2,
-                (int) Math.ceil((double) pricingBudget / Math.max(collections.size(), 1)));
-
+        // Phase 1: gather qualifying candidate leg-sets across all collections. Favorites already
+        // exclude events held/committed in the portfolio, so nothing here reuses a portfolio leg.
+        List<CandidateLegSet> candidates = new ArrayList<>();
         for (ComboCollectionSummary collection : collections) {
-            if (attempts >= pricingBudget) {
+            List<FavoriteLeg> favorites =
+                    strongestFavoritesInCollection(collection.collectionTicker(), minLeg, exclude);
+            for (List<FavoriteLeg> legSet :
+                    candidateLegSets(favorites, SHORTLIST_MIN_COMBO_PROBABILITY, candidateCeiling, maxLegs)) {
+                candidates.add(new CandidateLegSet(collection.collectionTicker(), legSet, legSetProduct(legSet)));
+            }
+        }
+
+        // Phase 2: dedupe by leg-event-set (the same combo often appears under several collection
+        // tickers) — keep the highest-probability instance of each distinct leg-set.
+        Map<Set<String>, CandidateLegSet> byLegs = new LinkedHashMap<>();
+        for (CandidateLegSet c : candidates) {
+            byLegs.merge(c.eventTickers(), c, (a, b) -> a.product().compareTo(b.product()) >= 0 ? a : b);
+        }
+        List<CandidateLegSet> deduped = new ArrayList<>(byLegs.values());
+
+        // Phase 3: fewest legs first, then highest probability (safest that still pays the multiple).
+        deduped.sort(Comparator.comparingInt((CandidateLegSet c) -> c.legs().size())
+                .thenComparing(Comparator.comparing(CandidateLegSet::product).reversed()));
+
+        // Phase 4: greedily select leg-DISJOINT candidates so the model can place several combos this
+        // cycle without any of them sharing a leg (with each other or with the portfolio).
+        List<CandidateLegSet> selected = new ArrayList<>();
+        Set<String> usedEvents = new HashSet<>();
+        for (CandidateLegSet c : deduped) {
+            if (selected.size() >= pricingBudget) {
                 break;
             }
-            List<FavoriteLeg> favorites = strongestFavoritesInCollection(collection.collectionTicker(), minLeg);
-            List<List<FavoriteLeg>> legSets = candidateLegSets(
-                    favorites, SHORTLIST_MIN_COMBO_PROBABILITY, candidateCeiling, maxLegs);
+            if (Collections.disjoint(usedEvents, c.eventTickers())) {
+                selected.add(c);
+                usedEvents.addAll(c.eventTickers());
+            }
+        }
+        log.info("Shortlist build: {} distinct candidate leg-set(s) after dedupe; selected {} leg-disjoint "
+                + "to price", deduped.size(), selected.size());
 
-            int perCollectionAttempts = 0;
-            int consecutiveFailures = 0;
-            for (List<FavoriteLeg> legSet : legSets) {
-                if (attempts >= pricingBudget || perCollectionAttempts >= maxPerCollection) {
+        // Phase 5: RFQ-price the selected candidates; keep quotes that actually pay the multiple.
+        List<PricedComboCandidate> out = new ArrayList<>();
+        int consecutiveFailures = 0;
+        for (CandidateLegSet c : selected) {
+            List<LegSelection> selections = c.legs().stream()
+                    .map(f -> new LegSelection(f.eventTicker(), f.marketTicker(), f.side()))
+                    .toList();
+            ComboPriceResponse priced;
+            try {
+                priced = priceCombo(c.collectionTicker(), selections);
+            } catch (RuntimeException e) {
+                log.warn("Shortlist: pricing candidate {} in {} failed: {}",
+                        selections, c.collectionTicker(), e.getMessage());
+                if (++consecutiveFailures >= SHORTLIST_MAX_CONSECUTIVE_FAILURES && out.isEmpty()) {
+                    log.warn("Shortlist: {} consecutive pricing failures and nothing priced yet — stopping",
+                            consecutiveFailures);
                     break;
                 }
-                List<LegSelection> selections = legSet.stream()
-                        .map(f -> new LegSelection(f.eventTicker(), f.marketTicker(), f.side()))
-                        .toList();
-                attempts++;
-                perCollectionAttempts++;
-                ComboPriceResponse priced;
-                try {
-                    priced = priceCombo(collection.collectionTicker(), selections);
-                } catch (RuntimeException e) {
-                    // Log the exact leg-set so a persistent rejection is diagnosable, not guessed at.
-                    log.warn("Shortlist: pricing candidate {} in {} failed: {}",
-                            selections, collection.collectionTicker(), e.getMessage());
-                    if (++consecutiveFailures >= SHORTLIST_MAX_CONSECUTIVE_FAILURES) {
-                        log.warn("Shortlist: {} consecutive pricing failures in {} — skipping the rest of "
-                                + "this collection", consecutiveFailures, collection.collectionTicker());
-                        break;
-                    }
-                    continue;
-                }
-                consecutiveFailures = 0;
-                // Keep only real quotes that actually pay the required multiple (combined ≤ maxCombo)
-                // and aren't an implausibly-cheap outlier (combined ≥ the sanity floor).
-                BigDecimal comboProb = parseDollar(priced.yesAskDollars());
-                if (priced.quoted() && comboProb != null
-                        && comboProb.compareTo(maxCombo) <= 0
-                        && comboProb.compareTo(SHORTLIST_MIN_COMBO_PROBABILITY) >= 0) {
-                    out.add(toCandidate(collection.collectionTicker(), legSet, priced));
-                }
+                continue;
+            }
+            consecutiveFailures = 0;
+            // Keep only real quotes that actually pay the required multiple (combined ≤ maxCombo) and
+            // aren't an implausibly-cheap outlier (combined ≥ the sanity floor).
+            BigDecimal comboProb = parseDollar(priced.yesAskDollars());
+            if (priced.quoted() && comboProb != null
+                    && comboProb.compareTo(maxCombo) <= 0
+                    && comboProb.compareTo(SHORTLIST_MIN_COMBO_PROBABILITY) >= 0) {
+                out.add(toCandidate(c.collectionTicker(), c.legs(), priced));
             }
         }
 
@@ -313,15 +335,29 @@ public class ComboService {
         out.sort(Comparator.comparing(
                 (PricedComboCandidate c) -> parseDollarOrZero(c.yesAskDollars())).reversed());
         log.info("Shortlist build: {} priced candidate(s) reached the {}x payout floor after {} pricing "
-                + "attempt(s)", out.size(), minPayoutMultiple.toPlainString(), attempts);
+                + "attempt(s)", out.size(), minPayoutMultiple.toPlainString(), selected.size());
         return out;
     }
 
+    /** A generated (not-yet-priced) candidate: which collection, its favorite legs, and the product of
+     *  their leg probabilities (the pre-pricing combined-probability estimate). */
+    private record CandidateLegSet(String collectionTicker, List<FavoriteLeg> legs, BigDecimal product) {
+        Set<String> eventTickers() {
+            return legs.stream().map(FavoriteLeg::eventTicker).collect(java.util.stream.Collectors.toSet());
+        }
+    }
+
     /** One collection's strongest per-event YES favorites (one per event) that individually clear the
-     *  leg floor, capped to {@link #SHORTLIST_FAVORITES_PER_COLLECTION}, strongest first. */
-    private List<FavoriteLeg> strongestFavoritesInCollection(String collectionTicker, BigDecimal minLeg) {
+     *  leg floor, capped to {@link #SHORTLIST_FAVORITES_PER_COLLECTION}, strongest first. Events in
+     *  {@code excludeEventTickers} (already held or already a leg in an active combo) are skipped, so
+     *  the resulting combos never reuse a portfolio leg. */
+    private List<FavoriteLeg> strongestFavoritesInCollection(String collectionTicker, BigDecimal minLeg,
+                                                             Set<String> excludeEventTickers) {
         List<FavoriteLeg> favorites = new ArrayList<>();
         for (ComboLegEvent leg : resolveLegsForShortlist(collectionTicker)) {
+            if (excludeEventTickers.contains(leg.eventTicker())) {
+                continue;
+            }
             FavoriteLeg fav = strongestFavorite(leg, minLeg);
             if (fav != null) {
                 favorites.add(fav);
