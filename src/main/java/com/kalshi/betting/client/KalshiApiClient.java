@@ -100,6 +100,23 @@ public class KalshiApiClient {
         return get("/portfolio/orders", params, true, GetOrdersResponse.class);
     }
 
+    /**
+     * One page of settled markets (resolved bets), newest first. {@code minTs} (epoch seconds) bounds
+     * how far back to look; {@code cursor} (from a prior page's response) fetches the next page — pass
+     * null for the first page. Authenticated.
+     */
+    public GetSettlementsResponse getSettlements(Long minTs, String cursor) {
+        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+        params.add("limit", "100");
+        if (minTs != null) {
+            params.add("min_ts", String.valueOf(minTs));
+        }
+        if (cursor != null && !cursor.isBlank()) {
+            params.add("cursor", cursor);
+        }
+        return get("/portfolio/settlements", params, true, GetSettlementsResponse.class);
+    }
+
     public CreateOrderV2Response createOrder(CreateOrderV2Request request) {
         return post("/portfolio/events/orders", request, CreateOrderV2Response.class);
     }
