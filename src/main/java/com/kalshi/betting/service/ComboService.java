@@ -73,12 +73,14 @@ public class ComboService {
 
     // ---- Pre-priced candidate shortlist (buildPricedCandidateShortlist) ----
     /** When a collection has too many legs to resolve at once, how many of its series to resolve
-     *  (tennis first). Bounds Kalshi calls while still reaching ATP/WTA favorites. */
-    private static final int SHORTLIST_MAX_SERIES_PER_COLLECTION = 4;
-    /** Top-N strongest per-event favorites kept per collection before forming combinations — bounds
-     *  the combinatorial explosion. Higher than before because reaching the payout floor now often
-     *  needs 3-5 legs (strong favorites multiply slowly), so we need more legs to draw from. */
-    private static final int SHORTLIST_FAVORITES_PER_COLLECTION = 8;
+     *  (tennis first, then other leagues). Kept wide so the favorite pool spans many sports — that's
+     *  what makes enough leg-DISJOINT combos available to place several bets per cycle (a small pool
+     *  of only strong tennis favorites yields just 1-2 disjoint 3-leg combos). Bounds Kalshi calls. */
+    private static final int SHORTLIST_MAX_SERIES_PER_COLLECTION = 12;
+    /** Top-N strongest per-event favorites kept per collection before forming combinations. Sized so
+     *  there's material for several leg-disjoint combos (each combo of strong favorites eats 3+ legs),
+     *  while keeping the subset enumeration bounded (2^N masks — keep N ≤ ~16). */
+    private static final int SHORTLIST_FAVORITES_PER_COLLECTION = 16;
     /** Cap on candidate leg-sets considered (per collection) after the probability filter. */
     private static final int SHORTLIST_MAX_LEGSETS = 20;
     /** Hard ceiling on how many candidates get RFQ-priced across the whole shortlist build — each
