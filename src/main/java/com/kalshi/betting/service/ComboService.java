@@ -72,6 +72,11 @@ public class ComboService {
      *  it resting indefinitely (this is exactly the "stuck pending order" failure mode to avoid). */
     private static final int EXECUTION_POLL_ATTEMPTS = 10;
     private static final long EXECUTION_POLL_INTERVAL_MILLIS = 1500;
+    /** How many times {@link #placeComboBet} re-prices and retries a candidate (fresh RFQ each time)
+     *  before giving up on it — user-specified: 3. Covers thin/fleeting market-maker liquidity (a
+     *  degenerate quote or a transient accept/confirm failure) without immediately abandoning an
+     *  otherwise-good candidate for a different one. */
+    private static final int PLACE_ATTEMPTS = 3;
 
     // ---- Pre-priced candidate shortlist (buildPricedCandidateShortlist) ----
     /** When a collection has too many legs to resolve at once, how many of its series to resolve
@@ -648,84 +653,109 @@ public class ComboService {
                             + price + ").");
         }
 
-        RfqAttempt real = requestQuote(marketTicker, desiredContracts);
-        if (real.quote().isEmpty()) {
-            cleanupRfq(real.rfqId());
-            return ComboBetResult.notFilled(eventTicker, marketTicker,
-                    "Quoted at 1 contract but no market maker quoted the full requested size ("
-                            + desiredContracts + ").");
-        }
-        Quote quote = real.quote().get();
-        BigDecimal actualPrice = yesAskPrice(quote);
-        log.info("Real quote for {}: id={}, yesBidDollars={}, noBidDollars={}, contractsFp={}, status={}",
-                marketTicker, quote.id(), quote.yesBidDollars(), quote.noBidDollars(), quote.contractsFp(),
-                quote.status());
-        // Mirror the indicative-quote guard above: unlike the throwaway 1-contract check, this real,
-        // full-size quote was never validated before — a null/degenerate price ($0 or $1, i.e. no real
-        // liquidity on the side we're about to accept) can legitimately get rejected by Kalshi at
-        // accept-time as invalid_parameters, and would otherwise NPE on the multiply below.
-        if (actualPrice == null || actualPrice.signum() <= 0 || actualPrice.compareTo(BigDecimal.ONE) >= 0) {
-            cleanupRfq(real.rfqId());
-            return ComboBetResult.notFilled(eventTicker, marketTicker,
-                    "Real quote price was invalid or degenerate ($" + actualPrice
-                            + ") — no real liquidity to accept.");
-        }
-        BigDecimal actualContracts = new BigDecimal(quote.contractsFp());
-        BigDecimal actualCost = actualPrice.multiply(actualContracts);
-        BigDecimal maxAcceptableCost = targetDollars.multiply(BUDGET_TOLERANCE);
-        if (actualCost.compareTo(maxAcceptableCost) > 0) {
-            cleanupRfq(real.rfqId());
-            return ComboBetResult.declined(eventTicker, marketTicker,
-                    "Quoted size/cost ($" + actualCost + ") exceeded the budget ($" + targetDollars
-                            + " target, $" + maxAcceptableCost + " max) — declined rather than overspend.");
+        // Market-maker liquidity for a combo can be thin/fleeting (especially props and lower-tier
+        // tennis) — the full-size quote can come back degenerate or the accept/confirm step can fail
+        // transiently even though the combo was healthy moments ago at indicative size. Re-price and
+        // retry a bounded number of times before giving up on this candidate entirely: a fresh RFQ is
+        // cheap (no money moves until accept/confirm succeeds), and this recovers from exactly the kind
+        // of transient staleness that caused an otherwise-good candidate to silently not_fill.
+        ComboBetResult lastFailure = ComboBetResult.notFilled(eventTicker, marketTicker,
+                "No placement attempt completed.");
+        for (int attempt = 1; attempt <= PLACE_ATTEMPTS; attempt++) {
+            RfqAttempt real = requestQuote(marketTicker, desiredContracts);
+            if (real.quote().isEmpty()) {
+                cleanupRfq(real.rfqId());
+                lastFailure = ComboBetResult.notFilled(eventTicker, marketTicker,
+                        "Quoted at 1 contract but no market maker quoted the full requested size ("
+                                + desiredContracts + ").");
+                log.warn("Placement attempt {}/{} for {}: no quote at full size — will retry.",
+                        attempt, PLACE_ATTEMPTS, marketTicker);
+                continue;
+            }
+            Quote quote = real.quote().get();
+            BigDecimal actualPrice = yesAskPrice(quote);
+            log.info("Real quote for {} (attempt {}/{}): id={}, yesBidDollars={}, noBidDollars={}, "
+                            + "contractsFp={}, status={}", marketTicker, attempt, PLACE_ATTEMPTS, quote.id(),
+                    quote.yesBidDollars(), quote.noBidDollars(), quote.contractsFp(), quote.status());
+            // A null/degenerate price ($0 or $1, i.e. no real liquidity on the side we're about to
+            // accept) can legitimately get rejected by Kalshi at accept-time as invalid_parameters, and
+            // would otherwise NPE on the multiply below — reprice and retry rather than give up.
+            if (actualPrice == null || actualPrice.signum() <= 0 || actualPrice.compareTo(BigDecimal.ONE) >= 0) {
+                cleanupRfq(real.rfqId());
+                lastFailure = ComboBetResult.notFilled(eventTicker, marketTicker,
+                        "Real quote price was invalid or degenerate ($" + actualPrice
+                                + ") — no real liquidity to accept.");
+                log.warn("Placement attempt {}/{} for {}: degenerate quote (${}) — will retry.",
+                        attempt, PLACE_ATTEMPTS, marketTicker, actualPrice);
+                continue;
+            }
+            BigDecimal actualContracts = new BigDecimal(quote.contractsFp());
+            BigDecimal actualCost = actualPrice.multiply(actualContracts);
+            BigDecimal maxAcceptableCost = targetDollars.multiply(BUDGET_TOLERANCE);
+            if (actualCost.compareTo(maxAcceptableCost) > 0) {
+                // A deliberate business decision, not a transient technical failure — repricing is
+                // unlikely to fix a structurally-too-large minimum lot size, so don't burn retries here.
+                cleanupRfq(real.rfqId());
+                return ComboBetResult.declined(eventTicker, marketTicker,
+                        "Quoted size/cost ($" + actualCost + ") exceeded the budget ($" + targetDollars
+                                + " target, $" + maxAcceptableCost + " max) — declined rather than overspend.");
+            }
+
+            boolean acceptOrConfirmThrew = false;
+            try {
+                // "accepted_side" is which side of the QUOTER's two-sided quote we're matching against,
+                // not which side we end up holding — matching their "no" bid means THEY buy no from us,
+                // leaving US net long yes (confirmed empirically: real placed bets came back holding
+                // "no" positions when this was "yes", the opposite of the intended pick every time).
+                client.acceptQuote(quote.rfqId(), quote.id(), "no");
+                client.confirmQuote(quote.rfqId(), quote.id());
+            } catch (Exception e) {
+                // A client-side exception here (timeout, dropped response, etc.) does NOT prove the
+                // operation didn't take effect on Kalshi's side — accept/confirm may have gone through
+                // even though we never saw a clean response. Never declare failure from this alone; the
+                // real state is checked via getQuote below regardless of what happened here.
+                log.warn("accept/confirm threw for quote {} (RFQ {}) on combo market {} (attempt {}/{}) — "
+                                + "checking real state before concluding anything failed: {}",
+                        quote.id(), quote.rfqId(), marketTicker, attempt, PLACE_ATTEMPTS, e.getMessage());
+                acceptOrConfirmThrew = true;
+            }
+
+            Quote finalQuote = pollForExecution(quote.rfqId(), quote.id());
+            if ("executed".equalsIgnoreCase(finalQuote.status())) {
+                activeComboLegTracker.record(marketTicker, legs);
+                return ComboBetResult.executed(eventTicker, marketTicker, actualContracts.toPlainString(),
+                        actualPrice.toPlainString(), actualCost.setScale(2, RoundingMode.HALF_UP).toPlainString());
+            }
+
+            if (acceptOrConfirmThrew && !"accepted".equalsIgnoreCase(finalQuote.status())
+                    && !"confirmed".equalsIgnoreCase(finalQuote.status())) {
+                // Genuinely never got anywhere this attempt — still "open" (or similar), nothing to
+                // clean up. Transient (e.g. the same staleness that produces a degenerate quote) — retry.
+                log.warn("Placement attempt {}/{} for {}: accept/confirm failed and no order resulted "
+                        + "(status={}) — will retry.", attempt, PLACE_ATTEMPTS, marketTicker, finalQuote.status());
+                lastFailure = ComboBetResult.notFilled(eventTicker, marketTicker,
+                        "Accept/confirm failed and no order resulted (status: " + finalQuote.status() + ").");
+                continue;
+            }
+
+            // Accepted/confirmed (successfully or ambiguously) but not executed within the poll window —
+            // a real order may be resting. Clean it up rather than leave it pending indefinitely. This is
+            // terminal, not retried: a real order was just created and cancelled on Kalshi's side, and
+            // retrying immediately risks stacking confusing resting orders on the same market.
+            log.warn("Combo bet on {} reached status={} but did not execute within the poll window — "
+                            + "cancelling the resulting order instead of leaving it resting.",
+                    marketTicker, finalQuote.status());
+            cancelStalledOrder(finalQuote, marketTicker);
+            return ComboBetResult.stalledCancelled(eventTicker, marketTicker,
+                    "Quote reached status \"" + finalQuote.status() + "\" but never actually filled within "
+                            + (EXECUTION_POLL_ATTEMPTS * EXECUTION_POLL_INTERVAL_MILLIS / 1000)
+                            + "s — cancelled the resulting order rather than leave it resting indefinitely. "
+                            + "No position should remain open.");
         }
 
-        boolean acceptOrConfirmThrew = false;
-        try {
-            // "accepted_side" is which side of the QUOTER's two-sided quote we're matching against,
-            // not which side we end up holding — matching their "no" bid means THEY buy no from us,
-            // leaving US net long yes (confirmed empirically: real placed bets came back holding
-            // "no" positions when this was "yes", the opposite of the intended pick every time).
-            client.acceptQuote(quote.rfqId(), quote.id(), "no");
-            client.confirmQuote(quote.rfqId(), quote.id());
-        } catch (Exception e) {
-            // A client-side exception here (timeout, dropped response, etc.) does NOT prove the
-            // operation didn't take effect on Kalshi's side — accept/confirm may have gone through
-            // even though we never saw a clean response. Never declare failure from this alone; the
-            // real state is checked via getQuote below regardless of what happened here.
-            log.warn("accept/confirm threw for quote {} (RFQ {}) on combo market {} — checking real "
-                            + "state before concluding anything failed: {}",
-                    quote.id(), quote.rfqId(), marketTicker, e.getMessage());
-            acceptOrConfirmThrew = true;
-        }
-
-        Quote finalQuote = pollForExecution(quote.rfqId(), quote.id());
-        if ("executed".equalsIgnoreCase(finalQuote.status())) {
-            activeComboLegTracker.record(marketTicker, legs);
-            return ComboBetResult.executed(eventTicker, marketTicker, actualContracts.toPlainString(),
-                    actualPrice.toPlainString(), actualCost.setScale(2, RoundingMode.HALF_UP).toPlainString());
-        }
-
-        if (acceptOrConfirmThrew && !"accepted".equalsIgnoreCase(finalQuote.status())
-                && !"confirmed".equalsIgnoreCase(finalQuote.status())) {
-            // Genuinely never got anywhere — still "open" (or similar), nothing to clean up.
-            log.error("Accept/confirm failed for quote {} (RFQ {}) on combo market {} and no order resulted "
-                    + "(status={})", quote.id(), quote.rfqId(), marketTicker, finalQuote.status());
-            return ComboBetResult.notFilled(eventTicker, marketTicker,
-                    "Accept/confirm failed and no order resulted (status: " + finalQuote.status() + ").");
-        }
-
-        // Accepted/confirmed (successfully or ambiguously) but not executed within the poll window —
-        // a real order may be resting. Clean it up rather than leave it pending indefinitely.
-        log.warn("Combo bet on {} reached status={} but did not execute within the poll window — "
-                        + "cancelling the resulting order instead of leaving it resting.",
-                marketTicker, finalQuote.status());
-        cancelStalledOrder(finalQuote, marketTicker);
-        return ComboBetResult.stalledCancelled(eventTicker, marketTicker,
-                "Quote reached status \"" + finalQuote.status() + "\" but never actually filled within "
-                        + (EXECUTION_POLL_ATTEMPTS * EXECUTION_POLL_INTERVAL_MILLIS / 1000)
-                        + "s — cancelled the resulting order rather than leave it resting indefinitely. "
-                        + "No position should remain open.");
+        log.warn("Combo bet on {} did not fill after {} reprice attempt(s) — giving up on this candidate.",
+                marketTicker, PLACE_ATTEMPTS);
+        return lastFailure;
     }
 
     /** Polls a confirmed quote until it reports "executed" or the window runs out — confirming only
