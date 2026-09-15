@@ -19,6 +19,8 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -76,7 +78,7 @@ public class ComboService {
      *  (tennis first, then other leagues). Kept wide so the favorite pool spans many sports — that's
      *  what makes enough leg-DISJOINT combos available to place several bets per cycle (a small pool
      *  of only strong tennis favorites yields just 1-2 disjoint 3-leg combos). Bounds Kalshi calls. */
-    private static final int SHORTLIST_MAX_SERIES_PER_COLLECTION = 12;
+    private static final int SHORTLIST_MAX_SERIES_PER_COLLECTION = 20;
     /** Top-N strongest per-event favorites kept per collection before forming combinations. Sized so
      *  there's material for several leg-disjoint combos (each combo of strong favorites eats 3+ legs),
      *  while keeping the subset enumeration bounded (2^N masks — keep N ≤ ~16). */
@@ -97,6 +99,11 @@ public class ComboService {
      *  real RFQ quote (which can come back a bit worse than the product-of-legs estimate) still tends
      *  to clear the payout floor. E.g. floor 1.6x → keep quotes ≤ 0.625; generate candidates ≤ 0.615. */
     private static final BigDecimal SHORTLIST_CANDIDATE_PROB_BUFFER = new BigDecimal("0.01");
+    /** Time zone used to decide what "today" means for the same-day leg filter. */
+    private static final ZoneId ZONE = ZoneId.of("America/Chicago");
+    /** Month abbreviations as they appear in Kalshi event tickers (e.g. the SEP in "...-26SEP15..."). */
+    private static final List<String> MONTH_ABBREVS =
+            List.of("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC");
 
     private final KalshiApiClient client;
     private final ActiveComboLegTracker activeComboLegTracker;
@@ -251,54 +258,61 @@ public class ComboService {
         BigDecimal maxCombo = BigDecimal.ONE.divide(minPayoutMultiple, 4, RoundingMode.HALF_UP);
         BigDecimal candidateCeiling = maxCombo.subtract(SHORTLIST_CANDIDATE_PROB_BUFFER);
         int pricingBudget = Math.min(Math.max(maxCandidates, 1), SHORTLIST_MAX_PRICING_ATTEMPTS);
-        Set<String> exclude = excludeEventTickers == null ? Set.of() : excludeEventTickers;
+        // Everything is keyed by underlying GAME (the ticker suffix), not the exact market: that's how
+        // we guarantee "no overlap" (a game moneyline, its total, and a player prop on it all share one
+        // game key) both against the portfolio and across the combos we build this cycle.
+        Set<String> excludeGameKeys = (excludeEventTickers == null ? Set.<String>of() : excludeEventTickers)
+                .stream().map(ComboService::gameKey).collect(Collectors.toSet());
+        Set<String> sportsSeries = sportsSeriesTickers();
+        LocalDate today = LocalDate.now(ZONE);
 
         List<ComboCollectionSummary> collections = listSportsCombos().stream()
                 .limit(Math.max(maxCollections, 1))
                 .toList();
-        log.info("Shortlist build: surveying {} sports combo collection(s), minLeg={}%, minPayout={}x "
-                + "(combined ≤ {}), maxLegs={}, pricing budget={}, excluding {} committed event(s)",
+        log.info("Shortlist build: surveying {} collection(s), minLeg={}%, minPayout={}x (combined ≤ {}), "
+                + "maxLegs={}, budget={}, same-day={}, excluding {} committed game(s)",
                 collections.size(), minLegProbPercent, minPayoutMultiple.toPlainString(),
-                maxCombo.toPlainString(), maxLegs, pricingBudget, exclude.size());
+                maxCombo.toPlainString(), maxLegs, pricingBudget, today, excludeGameKeys.size());
 
-        // Phase 1: gather qualifying candidate leg-sets across all collections. Favorites already
-        // exclude events held/committed in the portfolio, so nothing here reuses a portfolio leg.
+        // Phase 1: gather qualifying candidate leg-sets across all collections. Favorites are one per
+        // GAME, played TODAY, not already committed — across any sports market type (moneyline, spread,
+        // total, player/game props), whichever is the strongest qualifying favorite for that game.
         List<CandidateLegSet> candidates = new ArrayList<>();
         for (ComboCollectionSummary collection : collections) {
-            List<FavoriteLeg> favorites =
-                    strongestFavoritesInCollection(collection.collectionTicker(), minLeg, exclude);
+            List<FavoriteLeg> favorites = strongestFavoritesInCollection(
+                    collection.collectionTicker(), minLeg, sportsSeries, today, excludeGameKeys);
             for (List<FavoriteLeg> legSet :
                     candidateLegSets(favorites, SHORTLIST_MIN_COMBO_PROBABILITY, candidateCeiling, maxLegs)) {
                 candidates.add(new CandidateLegSet(collection.collectionTicker(), legSet, legSetProduct(legSet)));
             }
         }
 
-        // Phase 2: dedupe by leg-event-set (the same combo often appears under several collection
-        // tickers) — keep the highest-probability instance of each distinct leg-set.
-        Map<Set<String>, CandidateLegSet> byLegs = new LinkedHashMap<>();
+        // Phase 2: dedupe by GAME-key set (the same combo often appears under several collection
+        // tickers) — keep the highest-probability instance of each distinct set of games.
+        Map<Set<String>, CandidateLegSet> byGames = new LinkedHashMap<>();
         for (CandidateLegSet c : candidates) {
-            byLegs.merge(c.eventTickers(), c, (a, b) -> a.product().compareTo(b.product()) >= 0 ? a : b);
+            byGames.merge(c.gameKeys(), c, (a, b) -> a.product().compareTo(b.product()) >= 0 ? a : b);
         }
-        List<CandidateLegSet> deduped = new ArrayList<>(byLegs.values());
+        List<CandidateLegSet> deduped = new ArrayList<>(byGames.values());
 
         // Phase 3: fewest legs first, then highest probability (safest that still pays the multiple).
         deduped.sort(Comparator.comparingInt((CandidateLegSet c) -> c.legs().size())
                 .thenComparing(Comparator.comparing(CandidateLegSet::product).reversed()));
 
-        // Phase 4: greedily select leg-DISJOINT candidates so the model can place several combos this
-        // cycle without any of them sharing a leg (with each other or with the portfolio).
+        // Phase 4: greedily select GAME-DISJOINT candidates so no two combos we place this cycle touch
+        // the same underlying game (no correlated/overlapping exposure).
         List<CandidateLegSet> selected = new ArrayList<>();
-        Set<String> usedEvents = new HashSet<>();
+        Set<String> usedGames = new HashSet<>();
         for (CandidateLegSet c : deduped) {
             if (selected.size() >= pricingBudget) {
                 break;
             }
-            if (Collections.disjoint(usedEvents, c.eventTickers())) {
+            if (Collections.disjoint(usedGames, c.gameKeys())) {
                 selected.add(c);
-                usedEvents.addAll(c.eventTickers());
+                usedGames.addAll(c.gameKeys());
             }
         }
-        log.info("Shortlist build: {} distinct candidate leg-set(s) after dedupe; selected {} leg-disjoint "
+        log.info("Shortlist build: {} distinct candidate combo(s) after dedupe; selected {} game-disjoint "
                 + "to price", deduped.size(), selected.size());
 
         // Phase 5: RFQ-price the selected candidates; keep quotes that actually pay the multiple.
@@ -344,36 +358,89 @@ public class ComboService {
     /** A generated (not-yet-priced) candidate: which collection, its favorite legs, and the product of
      *  their leg probabilities (the pre-pricing combined-probability estimate). */
     private record CandidateLegSet(String collectionTicker, List<FavoriteLeg> legs, BigDecimal product) {
-        Set<String> eventTickers() {
-            return legs.stream().map(FavoriteLeg::eventTicker).collect(java.util.stream.Collectors.toSet());
+        /** Underlying games this combo touches — used for dedupe and no-overlap selection. */
+        Set<String> gameKeys() {
+            return legs.stream().map(f -> gameKey(f.eventTicker())).collect(Collectors.toSet());
         }
     }
 
-    /** One collection's strongest per-event YES favorites (one per event) that individually clear the
-     *  leg floor, capped to {@link #SHORTLIST_FAVORITES_PER_COLLECTION}, strongest first. Events in
-     *  {@code excludeEventTickers} (already held or already a leg in an active combo) are skipped, so
-     *  the resulting combos never reuse a portfolio leg. */
+    /** One collection's strongest favorite per underlying GAME that (a) is played today, (b) isn't an
+     *  already-committed game, and (c) clears the leg floor. "One per game" across all sports market
+     *  types means a combo built from these can never double up on the same game. Capped to
+     *  {@link #SHORTLIST_FAVORITES_PER_COLLECTION}, strongest first. */
     private List<FavoriteLeg> strongestFavoritesInCollection(String collectionTicker, BigDecimal minLeg,
-                                                             Set<String> excludeEventTickers) {
-        List<FavoriteLeg> favorites = new ArrayList<>();
-        for (ComboLegEvent leg : resolveLegsForShortlist(collectionTicker)) {
-            if (excludeEventTickers.contains(leg.eventTicker())) {
+                                                             Set<String> sportsSeries, LocalDate today,
+                                                             Set<String> excludeGameKeys) {
+        Map<String, FavoriteLeg> byGame = new LinkedHashMap<>();
+        for (ComboLegEvent leg : resolveLegsForShortlist(collectionTicker, sportsSeries)) {
+            String key = gameKey(leg.eventTicker());
+            if (excludeGameKeys.contains(key)) {
                 continue;
             }
+            LocalDate gameDate = gameDate(leg.eventTicker());
+            if (gameDate == null || !gameDate.equals(today)) {
+                continue; // same-day only — never a future (or unparseable) game
+            }
             FavoriteLeg fav = strongestFavorite(leg, minLeg);
-            if (fav != null) {
-                favorites.add(fav);
+            if (fav == null) {
+                continue;
+            }
+            FavoriteLeg current = byGame.get(key);
+            if (current == null || fav.prob().compareTo(current.prob()) > 0) {
+                byGame.put(key, fav); // keep this game's strongest market (moneyline, total, prop, ...)
             }
         }
-        favorites.sort(Comparator.comparing(FavoriteLeg::prob).reversed());
-        return favorites.stream().limit(SHORTLIST_FAVORITES_PER_COLLECTION).toList();
+        return byGame.values().stream()
+                .sorted(Comparator.comparing(FavoriteLeg::prob).reversed())
+                .limit(SHORTLIST_FAVORITES_PER_COLLECTION)
+                .toList();
     }
 
-    /** Resolves a collection's legs, restricted to core moneyline (GAME/MATCH) series — the "team X
-     *  wins / player Y wins" markets this strategy is built on. Spread/total/prop series are skipped:
-     *  they're mostly near-locks or noise that can't form the strong-favorite combos we want. If the
-     *  collection is too big to resolve at once, resolves a few core series (tennis first). */
-    private List<ComboLegEvent> resolveLegsForShortlist(String collectionTicker) {
+    /** The underlying game a market/event belongs to: the ticker's suffix after the series prefix,
+     *  which is identical across every market type for the same game (e.g. KXNFLGAME-26SEP17DETBUF,
+     *  KXNFLTOTAL-26SEP17DETBUF and a player prop all yield "26SEP17DETBUF"). */
+    static String gameKey(String eventTicker) {
+        if (eventTicker == null) {
+            return "";
+        }
+        int dash = eventTicker.indexOf('-');
+        return dash < 0 ? eventTicker : eventTicker.substring(dash + 1);
+    }
+
+    /** The date a game is played, parsed from the ticker suffix (YY MON DD, e.g. "26SEP15..." →
+     *  2026-09-15). Null if the suffix isn't a datable game (e.g. a synthetic combo-market ticker). */
+    static LocalDate gameDate(String eventTicker) {
+        String key = gameKey(eventTicker);
+        if (key.length() < 7) {
+            return null;
+        }
+        try {
+            int year = 2000 + Integer.parseInt(key.substring(0, 2));
+            int month = MONTH_ABBREVS.indexOf(key.substring(2, 5).toUpperCase(java.util.Locale.ROOT)) + 1;
+            if (month == 0) {
+                return null;
+            }
+            int day = Integer.parseInt(key.substring(5, 7));
+            return LocalDate.of(year, month, day);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Tickers of all series Kalshi files under the "Sports" category — includes every sports market
+     *  type (game/spread/total, player & game props) and excludes non-sports (crypto, indices). */
+    private Set<String> sportsSeriesTickers() {
+        return client.listSeries(SPORTS_CATEGORY).series().stream()
+                .map(s -> s.ticker())
+                .collect(Collectors.toSet());
+    }
+
+    /** Resolves a collection's legs across ALL sports market types (moneyline, spread, total, player &
+     *  game props) — anything filed under Kalshi's Sports category — while excluding non-sports series
+     *  (crypto, indices). Series are prioritized tennis → other moneyline (GAME/MATCH) → props, so the
+     *  broadest, strongest-favorite markets are resolved first within the series budget. If the
+     *  collection is small enough to resolve whole, its legs are filtered to sports series directly. */
+    private List<ComboLegEvent> resolveLegsForShortlist(String collectionTicker, Set<String> sportsSeries) {
         ComboLegsResponse resp;
         try {
             resp = getComboLegs(collectionTicker, null);
@@ -388,8 +455,8 @@ public class ComboService {
             return List.of();
         } else {
             List<String> series = resp.legCountsBySeries().keySet().stream()
-                    .filter(ComboService::isCoreMoneylineSeries)
-                    .sorted(Comparator.comparing((String s) -> !isTennisSeries(s)))
+                    .filter(sportsSeries::contains)
+                    .sorted(Comparator.comparingInt(ComboService::seriesPriority))
                     .limit(SHORTLIST_MAX_SERIES_PER_COLLECTION)
                     .toList();
             List<ComboLegEvent> all = new ArrayList<>();
@@ -406,18 +473,20 @@ public class ComboService {
             }
             resolved = all;
         }
-        // Keep only core moneyline events (covers the small-collection path, which isn't series-filtered).
+        // Keep only sports events (covers the small-collection path, which isn't series-filtered).
         return resolved.stream()
-                .filter(l -> isCoreMoneylineSeries(leadingSeriesTicker(l.eventTicker())))
+                .filter(l -> sportsSeries.contains(leadingSeriesTicker(l.eventTicker())))
                 .toList();
     }
 
-    /** Core moneyline series: "team/player wins" markets (ticker ends in GAME or MATCH), e.g.
-     *  KXNFLGAME, KXMLBGAME, KXWNBAGAME, KXATPMATCH, KXWTAMATCH. Excludes SPREAD/TOTAL/BTTS and player
-     *  props — those aren't the strong-favorite win combos this strategy targets. */
-    private static boolean isCoreMoneylineSeries(String seriesTicker) {
+    /** Resolution priority: tennis matches first (deepest source of strong favorites), then other
+     *  moneyline (GAME/MATCH) markets, then everything else (spreads/totals/props). Lower = sooner. */
+    private static int seriesPriority(String seriesTicker) {
+        if (isTennisSeries(seriesTicker)) {
+            return 0;
+        }
         String s = seriesTicker == null ? "" : seriesTicker.toUpperCase();
-        return s.endsWith("GAME") || s.endsWith("MATCH");
+        return (s.endsWith("GAME") || s.endsWith("MATCH")) ? 1 : 2;
     }
 
     private static boolean isTennisSeries(String seriesTicker) {

@@ -45,9 +45,9 @@ public class AutoComboBettingScheduler {
 
     /** Fraction of current available balance risked per bet — user-specified: 4% (doubled from 2%). */
     private static final BigDecimal BET_SIZE_FRACTION = new BigDecimal("0.04");
-    /** Combos to place per run — 4. The scheduler runs 2×/day (see cron), so this keeps daily volume
-     *  at ~8 combos (same as the old 4×/day × 2) while halving the number of expensive model cycles. */
-    private static final int NUMBER_OF_BETS = 4;
+    /** Combos to place per run — 2. The scheduler runs 2×/day (see cron), targeting ~4 bets/day total.
+     *  A smaller per-run target is easier to fill from today's same-day slate without reusing legs. */
+    private static final int NUMBER_OF_BETS = 2;
     /** Minimum PAYOUT MULTIPLE a whole combo must reach — user-specified: 1.6x. Payout ≈ 1/combined
      *  probability, so this means combined probability ≤ 1/1.6 = 62.5%. The shortlist builder stacks
      *  as many 70%+ favorite legs as it takes to get the combined probability down far enough to hit
