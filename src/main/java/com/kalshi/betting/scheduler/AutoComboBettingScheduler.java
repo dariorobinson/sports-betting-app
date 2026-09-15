@@ -126,12 +126,19 @@ public class AutoComboBettingScheduler {
             Set<String> committedEvents = committedEventTickers(positions);
 
             // Do the expensive survey + candidate pricing in Java (deterministic, no model) so the
-            // model only has to select and place — this is the main Anthropic cost saving. K = 2×
-            // the target so the model has real alternatives to choose among. Candidates are built only
-            // from events NOT already committed, and are leg-disjoint from each other.
+            // model only has to select and place — this is the main Anthropic cost saving. Candidates
+            // are built only from events NOT already committed, and are leg-disjoint from each other.
+            //
+            // Request NUMBER_OF_BETS * 4 (hits ComboService's own 8-attempt ceiling): production logs
+            // showed the pre-priced ESTIMATE (product of independent leg probabilities) frequently
+            // overshoots what the market maker actually quotes in real RFQ pricing — only ~25-50% of
+            // candidates that looked qualifying on paper actually cleared the 1.6x floor for real
+            // (observed: 0-2 of 4 attempted, across 5 consecutive cycles). Asking Java to attempt more
+            // candidates per cycle compensates for that real-vs-estimate gap without touching the model
+            // loop at all — this is pure Java/Kalshi work, so it adds latency/API load, not Anthropic cost.
             List<PricedComboCandidate> shortlist = comboService.buildPricedCandidateShortlist(
                     MIN_LEG_PROBABILITY, new BigDecimal(MIN_PAYOUT_MULTIPLE), MAX_COMBO_LEGS,
-                    NUMBER_OF_BETS * 2, MAX_COLLECTIONS_TO_SURVEY, committedEvents);
+                    NUMBER_OF_BETS * 4, MAX_COLLECTIONS_TO_SURVEY, committedEvents);
 
             if (shortlist.isEmpty()) {
                 // No qualifying NEW combos priced — don't spend a single Anthropic token this cycle.
