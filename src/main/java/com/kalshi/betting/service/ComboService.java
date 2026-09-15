@@ -300,8 +300,17 @@ public class ComboService {
         }
         List<CandidateLegSet> deduped = new ArrayList<>(byGames.values());
 
-        // Phase 3: fewest legs first, then highest probability (safest that still pays the multiple).
-        deduped.sort(Comparator.comparingInt((CandidateLegSet c) -> c.legs().size())
+        // Phase 3: prioritize which candidates get PRICED FIRST (not which are eligible — the pool
+        // stays broad). Production data showed most degenerate ($1.00, no real liquidity) real quotes
+        // come from Challenger-tour tennis and prop-style markets (set-winner, spread, total): market
+        // makers frequently don't provide a genuine two-sided price for those specific combinations,
+        // regardless of how good the pre-priced estimate looks. Mainline moneylines (top-tour tennis,
+        // team GAME/MATCH winners) convert to real quotes far more often. So: fewest thin-liquidity
+        // legs first, then fewest legs, then highest probability. Thin markets are still eligible and
+        // still get priced if the budget isn't filled by more-liquid candidates first — this only
+        // reorders attempts to spend the pricing budget where it's more likely to actually convert.
+        deduped.sort(Comparator.comparingLong((CandidateLegSet c) -> thinLiquidityLegCount(c.legs()))
+                .thenComparingInt(c -> c.legs().size())
                 .thenComparing(Comparator.comparing(CandidateLegSet::product).reversed()));
 
         // Phase 4: greedily select GAME-DISJOINT candidates so no two combos we place this cycle touch
@@ -509,6 +518,23 @@ public class ComboService {
     private static boolean isTennisSeries(String seriesTicker) {
         String s = seriesTicker == null ? "" : seriesTicker.toUpperCase();
         return s.contains("ATP") || s.contains("WTA") || s.contains("TENNIS");
+    }
+
+    /** How many of a candidate's legs come from a series that production data shows rarely gets a
+     *  genuine two-sided RFQ quote: Challenger-tour tennis (lower tier, thinner market-maker coverage)
+     *  or anything that isn't a moneyline (GAME/MATCH) market at all (spreads, totals, player/game
+     *  props, set-winner). Used only to ORDER pricing attempts (see Phase 3) — these markets stay fully
+     *  eligible, just deprioritized so pricing budget is spent on likelier-to-convert candidates first. */
+    private static long thinLiquidityLegCount(List<FavoriteLeg> legs) {
+        return legs.stream().filter(f -> isThinLiquiditySeries(leadingSeriesTicker(f.eventTicker()))).count();
+    }
+
+    private static boolean isThinLiquiditySeries(String seriesTicker) {
+        String s = seriesTicker == null ? "" : seriesTicker.toUpperCase();
+        if (s.contains("CHALLENGER")) {
+            return true; // lower-tier tour, thinner market-maker coverage even though it's a MATCH market
+        }
+        return !(s.endsWith("GAME") || s.endsWith("MATCH")); // not a moneyline market at all (prop-type)
     }
 
     /** A market priced at/above this is treated as unusable as a leg — either a settled/all-but-decided
