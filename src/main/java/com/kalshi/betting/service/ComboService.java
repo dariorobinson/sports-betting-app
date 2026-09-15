@@ -353,12 +353,13 @@ public class ComboService {
                 // Log exactly why, so a persistent "0 qualified" is diagnosable instead of guessed at:
                 // was it never quoted at all, or quoted but the REAL price came back worse than the
                 // pre-priced product-of-legs estimate (a real market-maker margin/spread the estimate
-                // doesn't account for)?
-                log.info("Shortlist: candidate {} in {} DID NOT qualify — estimatedProduct={}, quoted={}, "
-                                + "realYesAskDollars={}, realImpliedProb={} (need ≤ {} and ≥ {})",
-                        selections, c.collectionTicker(), c.product().toPlainString(), priced.quoted(),
-                        priced.yesAskDollars(), comboProb, maxCombo.toPlainString(),
-                        SHORTLIST_MIN_COMBO_PROBABILITY.toPlainString());
+                // doesn't account for)? The numeric comparison comes FIRST and the (potentially long)
+                // game list LAST — a truncated terminal/log viewer still shows the numbers that matter.
+                log.info("Shortlist: DID NOT qualify — estimatedProduct={}, quoted={}, realYesAskDollars={}, "
+                                + "realImpliedProb={} (need <= {} and >= {}) — collection={}, games={}",
+                        c.product().toPlainString(), priced.quoted(), priced.yesAskDollars(), comboProb,
+                        maxCombo.toPlainString(), SHORTLIST_MIN_COMBO_PROBABILITY.toPlainString(),
+                        c.collectionTicker(), c.gameKeys());
             }
         }
 
