@@ -412,14 +412,38 @@ public class ComboService {
                 continue;
             }
             FavoriteLeg current = byGame.get(key);
-            if (current == null || fav.prob().compareTo(current.prob()) > 0) {
-                byGame.put(key, fav); // keep this game's strongest market (moneyline, total, prop, ...)
+            // Prefer a liquid market type over a thin one for this game EVEN IF the thin one shows a
+            // higher raw probability — production data shows thin-liquidity combos (Challenger tennis,
+            // props) get a real two-sided RFQ quote only a small fraction of the time, so a thin leg's
+            // high probability is largely fictional in practice. Only fall back to a thin leg for this
+            // game if no liquid market type qualifies for it at all.
+            if (current == null || isBetterFavorite(fav, current)) {
+                byGame.put(key, fav);
             }
         }
+        // Cap to the top favorites, liquid ones first (so thin markets with a high raw probability can't
+        // crowd genuinely liquid favorites out of the per-collection budget), then by probability.
         return byGame.values().stream()
-                .sorted(Comparator.comparing(FavoriteLeg::prob).reversed())
+                .sorted(Comparator.comparingInt(ComboService::favoriteLiquidityRank)
+                        .thenComparing(Comparator.comparing(FavoriteLeg::prob).reversed()))
                 .limit(SHORTLIST_FAVORITES_PER_COLLECTION)
                 .toList();
+    }
+
+    /** True if {@code candidate} should replace {@code current} as this game's chosen favorite: a more
+     *  liquid market type always wins, probability only breaks ties within the same liquidity tier. */
+    private static boolean isBetterFavorite(FavoriteLeg candidate, FavoriteLeg current) {
+        int candidateTier = favoriteLiquidityRank(candidate);
+        int currentTier = favoriteLiquidityRank(current);
+        if (candidateTier != currentTier) {
+            return candidateTier < currentTier;
+        }
+        return candidate.prob().compareTo(current.prob()) > 0;
+    }
+
+    /** 0 = liquid (mainline moneyline/top-tour), 1 = thin (Challenger tour, props/spread/total). */
+    private static int favoriteLiquidityRank(FavoriteLeg f) {
+        return isThinLiquiditySeries(leadingSeriesTicker(f.eventTicker())) ? 1 : 0;
     }
 
     /** The underlying game a market/event belongs to: the ticker's suffix after the series prefix,
