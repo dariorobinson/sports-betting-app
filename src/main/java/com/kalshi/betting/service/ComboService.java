@@ -657,6 +657,19 @@ public class ComboService {
         }
         Quote quote = real.quote().get();
         BigDecimal actualPrice = yesAskPrice(quote);
+        log.info("Real quote for {}: id={}, yesBidDollars={}, noBidDollars={}, contractsFp={}, status={}",
+                marketTicker, quote.id(), quote.yesBidDollars(), quote.noBidDollars(), quote.contractsFp(),
+                quote.status());
+        // Mirror the indicative-quote guard above: unlike the throwaway 1-contract check, this real,
+        // full-size quote was never validated before — a null/degenerate price ($0 or $1, i.e. no real
+        // liquidity on the side we're about to accept) can legitimately get rejected by Kalshi at
+        // accept-time as invalid_parameters, and would otherwise NPE on the multiply below.
+        if (actualPrice == null || actualPrice.signum() <= 0 || actualPrice.compareTo(BigDecimal.ONE) >= 0) {
+            cleanupRfq(real.rfqId());
+            return ComboBetResult.notFilled(eventTicker, marketTicker,
+                    "Real quote price was invalid or degenerate ($" + actualPrice
+                            + ") — no real liquidity to accept.");
+        }
         BigDecimal actualContracts = new BigDecimal(quote.contractsFp());
         BigDecimal actualCost = actualPrice.multiply(actualContracts);
         BigDecimal maxAcceptableCost = targetDollars.multiply(BUDGET_TOLERANCE);
