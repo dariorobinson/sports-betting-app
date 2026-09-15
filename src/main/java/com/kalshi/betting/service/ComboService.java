@@ -339,10 +339,21 @@ public class ComboService {
             // Keep only real quotes that actually pay the required multiple (combined ≤ maxCombo) and
             // aren't an implausibly-cheap outlier (combined ≥ the sanity floor).
             BigDecimal comboProb = parseDollar(priced.yesAskDollars());
-            if (priced.quoted() && comboProb != null
+            boolean qualifies = priced.quoted() && comboProb != null
                     && comboProb.compareTo(maxCombo) <= 0
-                    && comboProb.compareTo(SHORTLIST_MIN_COMBO_PROBABILITY) >= 0) {
+                    && comboProb.compareTo(SHORTLIST_MIN_COMBO_PROBABILITY) >= 0;
+            if (qualifies) {
                 out.add(toCandidate(c.collectionTicker(), c.legs(), priced));
+            } else {
+                // Log exactly why, so a persistent "0 qualified" is diagnosable instead of guessed at:
+                // was it never quoted at all, or quoted but the REAL price came back worse than the
+                // pre-priced product-of-legs estimate (a real market-maker margin/spread the estimate
+                // doesn't account for)?
+                log.info("Shortlist: candidate {} in {} DID NOT qualify — estimatedProduct={}, quoted={}, "
+                                + "realYesAskDollars={}, realImpliedProb={} (need ≤ {} and ≥ {})",
+                        selections, c.collectionTicker(), c.product().toPlainString(), priced.quoted(),
+                        priced.yesAskDollars(), comboProb, maxCombo.toPlainString(),
+                        SHORTLIST_MIN_COMBO_PROBABILITY.toPlainString());
             }
         }
 
