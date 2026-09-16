@@ -353,6 +353,10 @@ public class ComboService {
         // already-rejected legs forces subsequent attempts to reach genuinely different candidates
         // deeper in the (usually much larger) favorite pool.
         Set<String> rejectedEventTickers = new HashSet<>();
+        // Compact per-rejection detail so "0 qualified" is diagnosable straight from the Discord
+        // report — not quoted at all, vs. quoted but the REAL price landed worse than the pre-priced
+        // product-of-legs estimate — without another round of pulling EC2 logs.
+        List<String> rejectionDetails = new ArrayList<>();
         int consecutiveFailures = 0;
         int pricingAttemptsMade = 0;
         for (CandidateLegSet c : selected) {
@@ -367,6 +371,8 @@ public class ComboService {
                 log.warn("Shortlist: pricing candidate {} in {} failed: {}",
                         selections, c.collectionTicker(), e.getMessage());
                 c.legs().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
+                rejectionDetails.add(c.legs().size() + "-leg (est=" + c.product().toPlainString()
+                        + "): pricing call failed (" + e.getMessage() + ")");
                 if (++consecutiveFailures >= SHORTLIST_MAX_CONSECUTIVE_FAILURES && out.isEmpty()) {
                     log.warn("Shortlist: {} consecutive pricing failures and nothing priced yet — stopping",
                             consecutiveFailures);
@@ -385,11 +391,13 @@ public class ComboService {
                 out.add(toCandidate(c.collectionTicker(), c.legs(), priced));
             } else {
                 c.legs().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
-                // Log exactly why, so a persistent "0 qualified" is diagnosable instead of guessed at:
-                // was it never quoted at all, or quoted but the REAL price came back worse than the
+                // Record exactly why, so a persistent "0 qualified" is diagnosable instead of guessed
+                // at: was it never quoted at all, or quoted but the REAL price came back worse than the
                 // pre-priced product-of-legs estimate (a real market-maker margin/spread the estimate
-                // doesn't account for)? The numeric comparison comes FIRST and the (potentially long)
-                // game list LAST — a truncated terminal/log viewer still shows the numbers that matter.
+                // doesn't account for)?
+                String reason = !priced.quoted() ? "not quoted (no market maker responded)"
+                        : "quoted real=" + priced.yesAskDollars() + " (need <= " + maxCombo.toPlainString() + ")";
+                rejectionDetails.add(c.legs().size() + "-leg (est=" + c.product().toPlainString() + "): " + reason);
                 log.info("Shortlist: DID NOT qualify — estimatedProduct={}, quoted={}, realYesAskDollars={}, "
                                 + "realImpliedProb={} (need <= {} and >= {}) — collection={}, games={}",
                         c.product().toPlainString(), priced.quoted(), priced.yesAskDollars(), comboProb,
@@ -407,7 +415,7 @@ public class ComboService {
         ShortlistDiagnostics diagnostics = new ShortlistDiagnostics(collections.size(), excludeGameKeys.size(),
                 favoritesFound, candidates.size(), deduped.size(), selected.size(), pricingAttemptsMade,
                 out.size());
-        return new ShortlistResult(out, diagnostics, rejectedEventTickers);
+        return new ShortlistResult(out, diagnostics, rejectedEventTickers, rejectionDetails);
     }
 
     /** A generated (not-yet-priced) candidate: which collection, its favorite legs, and the product of

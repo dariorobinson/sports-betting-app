@@ -168,6 +168,10 @@ public class AutoComboBettingScheduler {
                 // Included in every report (not just logs) so "no qualifying combos" is diagnosable
                 // straight from Discord — which phase produced zero — without pulling EC2 logs at all.
                 String diagnosticsLine = "[" + shortlistResult.diagnostics().summarize() + "]";
+                // Per-rejection reason (not quoted vs. quoted-but-worse-than-estimate) — the actual gap
+                // between the pre-priced estimate and the real market, straight in the report.
+                String rejectionsLine = shortlistResult.rejectionDetails().isEmpty() ? ""
+                        : "\nRejected: " + String.join("; ", shortlistResult.rejectionDetails());
 
                 if (shortlist.isEmpty()) {
                     // No qualifying NEW combos priced this attempt — don't spend a single Anthropic
@@ -177,7 +181,7 @@ public class AutoComboBettingScheduler {
                             + "skipping the model call. {}", attempt, MAX_CYCLE_ATTEMPTS, diagnosticsLine);
                     attemptReports.add("No NEW combos reached the " + MIN_PAYOUT_MULTIPLE
                             + "x payout floor with " + MIN_LEG_PROBABILITY + "%+ legs. No bets placed "
-                            + "this attempt. " + diagnosticsLine);
+                            + "this attempt. " + diagnosticsLine + rejectionsLine);
                 } else {
                     String shortlistJson = ToolServices.toJson(shortlist);
                     String positionsJson = ToolServices.toJson(positionsBefore);
@@ -205,7 +209,7 @@ public class AutoComboBettingScheduler {
                     log.info("Autonomous combo betting attempt {}/{}: {} new position(s) detected "
                                     + "(placedSoFar={}/{})", attempt, MAX_CYCLE_ATTEMPTS, placedThisAttempt,
                             placedSoFar, NUMBER_OF_BETS);
-                    attemptReports.add(attemptResponse + "\n" + diagnosticsLine);
+                    attemptReports.add(attemptResponse + "\n" + diagnosticsLine + rejectionsLine);
                 }
 
                 if (placedSoFar < NUMBER_OF_BETS && attempt < MAX_CYCLE_ATTEMPTS) {
