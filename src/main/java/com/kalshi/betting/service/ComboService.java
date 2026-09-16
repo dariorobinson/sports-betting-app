@@ -83,19 +83,26 @@ public class ComboService {
 
     // ---- Pre-priced candidate shortlist (buildPricedCandidateShortlist) ----
     /** When a collection has too many legs to resolve at once, how many of its series to resolve
-     *  (tennis first, then other leagues). Kept wide so the favorite pool spans many sports — that's
-     *  what makes enough leg-DISJOINT combos available to place several bets per cycle (a small pool
-     *  of only strong tennis favorites yields just 1-2 disjoint 3-leg combos). Bounds Kalshi calls. */
-    private static final int SHORTLIST_MAX_SERIES_PER_COLLECTION = 20;
-    /** Top-N strongest per-event favorites kept per collection before forming combinations. Sized so
-     *  there's material for several leg-disjoint combos (each combo of strong favorites eats 3+ legs),
-     *  while keeping the subset enumeration bounded (2^N masks — keep N ≤ ~16). */
-    private static final int SHORTLIST_FAVORITES_PER_COLLECTION = 16;
-    /** Cap on candidate leg-sets considered (per collection) after the probability filter. */
-    private static final int SHORTLIST_MAX_LEGSETS = 20;
+     *  (tennis first, then other leagues). Widened from 20 to survey a genuinely broad market pool —
+     *  user asked to search over "all open markets," not a narrow slice — while still bounding Kalshi
+     *  calls to something reasonable per cycle. */
+    private static final int SHORTLIST_MAX_SERIES_PER_COLLECTION = 30;
+    /** Top-N strongest per-event favorites kept per collection before forming combinations. Widened
+     *  from 16 to mix over a much larger pool, per the user's request to consider more of the open
+     *  market — but subset enumeration below is O(2^N), so N must stay small enough to enumerate
+     *  quickly: 2^22 ≈ 4.2M masks, a sub-second scan in Java. Do not raise this past ~24 without
+     *  switching candidateLegSets from bitmask enumeration to combinatorial generation. */
+    private static final int SHORTLIST_FAVORITES_PER_COLLECTION = 22;
+    /** Cap on candidate leg-sets considered (per collection) after the probability filter. Widened from
+     *  20 so genuinely more combinations survive into the cross-collection pricing stage. */
+    private static final int SHORTLIST_MAX_LEGSETS = 60;
     /** Hard ceiling on how many candidates get RFQ-priced across the whole shortlist build — each
-     *  pricing call is a real (money-free) RFQ round-trip, so this bounds latency and Kalshi load. */
-    private static final int SHORTLIST_MAX_PRICING_ATTEMPTS = 8;
+     *  pricing call is a real (money-free) RFQ round-trip. Widened from 8: production data showed most
+     *  candidates get a degenerate ($1.00, no real liquidity) quote, so a small budget gave up before
+     *  ever finding one a market maker would actually price. Genuinely "mix and match until something
+     *  works" needs enough attempts to get past the degenerate ones — this bounds latency (~1-3s per
+     *  attempt, so up to ~60-70s added per cycle) and Kalshi API load, not the search itself. */
+    private static final int SHORTLIST_MAX_PRICING_ATTEMPTS = 24;
     /** Stop pricing candidates in a collection after this many consecutive failures — if its legs are
      *  being rejected (e.g. it structurally can't form the combos we generate), don't burn the budget. */
     private static final int SHORTLIST_MAX_CONSECUTIVE_FAILURES = 2;
@@ -371,8 +378,11 @@ public class ComboService {
                 log.warn("Shortlist: pricing candidate {} in {} failed: {}",
                         selections, c.collectionTicker(), e.getMessage());
                 c.legs().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
-                rejectionDetails.add(c.legs().size() + "-leg (est=" + c.product().toPlainString()
-                        + "): pricing call failed (" + e.getMessage() + ")");
+                String failedSeries = c.legs().stream()
+                        .map(f -> leadingSeriesTicker(f.eventTicker()))
+                        .collect(Collectors.joining("+"));
+                rejectionDetails.add(c.legs().size() + "-leg [" + failedSeries + "] (est="
+                        + c.product().toPlainString() + "): pricing call failed (" + e.getMessage() + ")");
                 if (++consecutiveFailures >= SHORTLIST_MAX_CONSECUTIVE_FAILURES && out.isEmpty()) {
                     log.warn("Shortlist: {} consecutive pricing failures and nothing priced yet — stopping",
                             consecutiveFailures);
@@ -397,7 +407,11 @@ public class ComboService {
                 // doesn't account for)?
                 String reason = !priced.quoted() ? "not quoted (no market maker responded)"
                         : "quoted real=" + priced.yesAskDollars() + " (need <= " + maxCombo.toPlainString() + ")";
-                rejectionDetails.add(c.legs().size() + "-leg (est=" + c.product().toPlainString() + "): " + reason);
+                String series = c.legs().stream()
+                        .map(f -> leadingSeriesTicker(f.eventTicker()))
+                        .collect(Collectors.joining("+"));
+                rejectionDetails.add(c.legs().size() + "-leg [" + series + "] (est="
+                        + c.product().toPlainString() + "): " + reason);
                 log.info("Shortlist: DID NOT qualify — estimatedProduct={}, quoted={}, realYesAskDollars={}, "
                                 + "realImpliedProb={} (need <= {} and >= {}) — collection={}, games={}",
                         c.product().toPlainString(), priced.quoted(), priced.yesAskDollars(), comboProb,

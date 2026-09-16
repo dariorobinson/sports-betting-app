@@ -159,10 +159,12 @@ public class AutoComboBettingScheduler {
                 // Do the expensive survey + candidate pricing in Java (deterministic, no model) so the
                 // model only has to select and place — the main Anthropic cost saving. Candidates are
                 // built only from events NOT already committed/rejected, and are leg-disjoint from
-                // each other. maxCandidates scales to what's still needed, not the full daily target.
+                // each other. maxCandidates scales to what's still needed, capped by ComboService's own
+                // ceiling (SHORTLIST_MAX_PRICING_ATTEMPTS) — genuinely try many real combinations before
+                // giving up on this attempt, not just a handful, since most candidates turn out degenerate.
                 ShortlistResult shortlistResult = comboService.buildPricedCandidateShortlist(
                         MIN_LEG_PROBABILITY, new BigDecimal(MIN_PAYOUT_MULTIPLE), MAX_COMBO_LEGS,
-                        remaining * 4, MAX_COLLECTIONS_TO_SURVEY, excludeEvents);
+                        remaining * 15, MAX_COLLECTIONS_TO_SURVEY, excludeEvents);
                 List<PricedComboCandidate> shortlist = shortlistResult.candidates();
                 rejectedInEarlierAttempts.addAll(shortlistResult.rejectedEventTickers());
                 // Included in every report (not just logs) so "no qualifying combos" is diagnosable
@@ -229,6 +231,15 @@ public class AutoComboBettingScheduler {
                 }
                 combined.append("Total: placed ").append(placedSoFar).append(" of ").append(NUMBER_OF_BETS)
                         .append(" target bets across ").append(attemptReports.size()).append(" attempt(s).");
+                if (placedSoFar < NUMBER_OF_BETS) {
+                    // Couldn't fully automate it — the "Rejected: ..." lines above list every real
+                    // combo/price we actually tried this cycle (not just a technical log), so you can
+                    // manually place one on Kalshi yourself if one looks worth it despite missing the
+                    // 1.6x floor (e.g. a real quote that only reached ~1.35x).
+                    combined.append("\n\nCouldn't automate the rest — see the \"Rejected:\" lines above "
+                            + "for the specific combos/prices actually tried this cycle. Feel free to "
+                            + "place any of those manually on Kalshi if one looks worth it to you.");
+                }
                 response = combined.toString();
             }
         } catch (Exception e) {
