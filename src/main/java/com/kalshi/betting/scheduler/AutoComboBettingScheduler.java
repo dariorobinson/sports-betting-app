@@ -17,6 +17,7 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -63,6 +64,22 @@ public class AutoComboBettingScheduler {
     private static final int MAX_COMBO_LEGS = 5;
     /** How many combo collections the Java shortlist builder surveys per cycle. */
     private static final int MAX_COLLECTIONS_TO_SURVEY = 4;
+    /** Total attempts (including the first) to reach {@link #NUMBER_OF_BETS} placed bets per scheduled
+     *  run — user-specified: 6. Each attempt rebuilds the shortlist fresh (excluding anything already
+     *  committed, including bets placed in EARLIER attempts of this same run) since RFQ pricing is a
+     *  live, moment-to-moment thing — a combo that came back empty/degenerate can succeed on a later
+     *  attempt. Never relaxes the quality floors to hit the count; a genuinely thin day just uses fewer
+     *  than 6 attempts' worth of Anthropic calls (an attempt with an empty shortlist never calls the
+     *  model at all, so cost only grows on attempts that had real candidates to evaluate). */
+    private static final int MAX_CYCLE_ATTEMPTS = 6;
+    /** Pause between attempts — avoids hammering Kalshi's RFQ/quote endpoints back-to-back (already
+     *  hit a 429 once during normal single-attempt operation) and gives real market conditions a moment
+     *  to actually change between tries. */
+    private static final long RETRY_DELAY_MILLIS = 2000;
+    /** Brief pause after a model-invoking attempt before re-checking positions, to be safe against any
+     *  eventual-consistency lag between an order executing and it showing up via GetPositions — belt and
+     *  suspenders on top of ComboService's own execution-poll, which already waits for "executed" status. */
+    private static final long POSITION_SETTLE_DELAY_MILLIS = 1000;
 
     private final ObjectProvider<JDA> jdaProvider;
     private final OrchestratorService orchestratorService;
@@ -115,54 +132,88 @@ public class AutoComboBettingScheduler {
                 notifyUser(jda, response);
                 return response;
             }
-
+            // Sized once per run (not re-derived per attempt) so a partial success earlier in the same
+            // run doesn't shrink the size of bets placed later in it.
             log.info("Running autonomous combo betting for user {} — balance=${}, betSize=${}",
                     authorizedUserId, balance, betSize);
 
-            // Fetch positions ONCE and reuse: both to exclude already-committed legs from the
-            // shortlist (so we stop proposing combos the model must reject for leg-reuse) and to
-            // inject into the prompt as a safety-net.
-            PositionsView positions = portfolioService.getPositions();
-            Set<String> committedEvents = committedEventTickers(positions);
+            int placedSoFar = 0;
+            List<String> attemptReports = new ArrayList<>();
+            for (int attempt = 1; attempt <= MAX_CYCLE_ATTEMPTS && placedSoFar < NUMBER_OF_BETS; attempt++) {
+                int remaining = NUMBER_OF_BETS - placedSoFar;
 
-            // Do the expensive survey + candidate pricing in Java (deterministic, no model) so the
-            // model only has to select and place — this is the main Anthropic cost saving. Candidates
-            // are built only from events NOT already committed, and are leg-disjoint from each other.
-            //
-            // Request NUMBER_OF_BETS * 4 (hits ComboService's own 8-attempt ceiling): production logs
-            // showed the pre-priced ESTIMATE (product of independent leg probabilities) frequently
-            // overshoots what the market maker actually quotes in real RFQ pricing — only ~25-50% of
-            // candidates that looked qualifying on paper actually cleared the 1.6x floor for real
-            // (observed: 0-2 of 4 attempted, across 5 consecutive cycles). Asking Java to attempt more
-            // candidates per cycle compensates for that real-vs-estimate gap without touching the model
-            // loop at all — this is pure Java/Kalshi work, so it adds latency/API load, not Anthropic cost.
-            List<PricedComboCandidate> shortlist = comboService.buildPricedCandidateShortlist(
-                    MIN_LEG_PROBABILITY, new BigDecimal(MIN_PAYOUT_MULTIPLE), MAX_COMBO_LEGS,
-                    NUMBER_OF_BETS * 4, MAX_COLLECTIONS_TO_SURVEY, committedEvents);
+                // Fetch positions FRESH every attempt: both to exclude already-committed legs (which
+                // now also includes anything placed in an EARLIER attempt of this same run) and as the
+                // "before" snapshot for detecting whether this attempt actually places anything.
+                PositionsView positionsBefore = portfolioService.getPositions();
+                Set<String> committedEvents = committedEventTickers(positionsBefore);
 
-            if (shortlist.isEmpty()) {
-                // No qualifying NEW combos priced — don't spend a single Anthropic token this cycle.
-                log.info("Autonomous combo betting: no qualifying new combos this cycle — skipping the model call.");
-                response = "Autonomous combo betting: no NEW combos reached the " + MIN_PAYOUT_MULTIPLE
-                        + "x payout floor with " + MIN_LEG_PROBABILITY + "%+ legs this cycle (excluded "
-                        + committedEvents.size() + " already-committed events across "
-                        + MAX_COLLECTIONS_TO_SURVEY + " collections). No bets placed.";
-                notifyUser(jda, response);
-                return response;
+                // Do the expensive survey + candidate pricing in Java (deterministic, no model) so the
+                // model only has to select and place — the main Anthropic cost saving. Candidates are
+                // built only from events NOT already committed, and are leg-disjoint from each other.
+                // maxCandidates scales to what's still needed, not always the full daily target.
+                List<PricedComboCandidate> shortlist = comboService.buildPricedCandidateShortlist(
+                        MIN_LEG_PROBABILITY, new BigDecimal(MIN_PAYOUT_MULTIPLE), MAX_COMBO_LEGS,
+                        remaining * 4, MAX_COLLECTIONS_TO_SURVEY, committedEvents);
+
+                if (shortlist.isEmpty()) {
+                    // No qualifying NEW combos priced this attempt — don't spend a single Anthropic
+                    // token on it. Real RFQ pricing is a live, moment-to-moment thing, so simply
+                    // retrying (fresh quotes) can succeed even though nothing changed in our own logic.
+                    log.info("Autonomous combo betting attempt {}/{}: no qualifying new combos — "
+                            + "skipping the model call.", attempt, MAX_CYCLE_ATTEMPTS);
+                    attemptReports.add("No NEW combos reached the " + MIN_PAYOUT_MULTIPLE
+                            + "x payout floor with " + MIN_LEG_PROBABILITY + "%+ legs (excluded "
+                            + committedEvents.size() + " already-committed events across "
+                            + MAX_COLLECTIONS_TO_SURVEY + " collections). No bets placed this attempt.");
+                } else {
+                    String shortlistJson = ToolServices.toJson(shortlist);
+                    String positionsJson = ToolServices.toJson(positionsBefore);
+                    Set<String> tickersBefore = marketTickers(positionsBefore);
+
+                    // chatOnce, not chat: this cycle is fully self-contained, so it gets no benefit
+                    // from persisted conversation memory — persisting it would resend every past
+                    // cycle's prompt+report, uncached, on every future call forever (see chatOnce's
+                    // javadoc). The reduced SCHEDULER_TOOL_CLASSES ships ~4 tool schemas instead of 15.
+                    String attemptResponse = orchestratorService.chatOnce("scheduler:" + authorizedUserId,
+                            buildPrompt(betSize, remaining, shortlistJson, positionsJson),
+                            OrchestratorService.SCHEDULER_TOOL_CLASSES);
+                    if (attemptResponse == null || attemptResponse.isEmpty()) {
+                        attemptResponse = "I couldn't generate a response this attempt.";
+                    }
+
+                    // Count NEW market positions rather than parsing the model's prose — deterministic
+                    // ground truth for "how many bets actually executed" regardless of how it's worded.
+                    Thread.sleep(POSITION_SETTLE_DELAY_MILLIS);
+                    Set<String> tickersAfter = marketTickers(portfolioService.getPositions());
+                    tickersAfter.removeAll(tickersBefore);
+                    int placedThisAttempt = tickersAfter.size();
+                    placedSoFar += placedThisAttempt;
+
+                    log.info("Autonomous combo betting attempt {}/{}: {} new position(s) detected "
+                                    + "(placedSoFar={}/{})", attempt, MAX_CYCLE_ATTEMPTS, placedThisAttempt,
+                            placedSoFar, NUMBER_OF_BETS);
+                    attemptReports.add(attemptResponse);
+                }
+
+                if (placedSoFar < NUMBER_OF_BETS && attempt < MAX_CYCLE_ATTEMPTS) {
+                    Thread.sleep(RETRY_DELAY_MILLIS);
+                }
             }
 
-            String shortlistJson = ToolServices.toJson(shortlist);
-            String positionsJson = ToolServices.toJson(positions);
-
-            // chatOnce, not chat: this cycle is fully self-contained, so it gets no benefit from
-            // persisted conversation memory — persisting it would resend every past cycle's
-            // prompt+report, uncached, on every future call forever (see chatOnce's javadoc). The
-            // reduced SCHEDULER_TOOL_CLASSES ships ~4 tool schemas instead of 15.
-            response = orchestratorService.chatOnce("scheduler:" + authorizedUserId,
-                    buildPrompt(betSize, shortlistJson, positionsJson),
-                    OrchestratorService.SCHEDULER_TOOL_CLASSES);
-            if (response == null || response.isEmpty()) {
-                response = "Autonomous combo betting: I couldn't generate a response this cycle.";
+            if (attemptReports.size() == 1) {
+                // Succeeded (or gave its one qualifying shot) on the first try — same clean, unlabeled
+                // report as before this feature existed, no retry noise for the common case.
+                response = attemptReports.get(0);
+            } else {
+                StringBuilder combined = new StringBuilder();
+                for (int i = 0; i < attemptReports.size(); i++) {
+                    combined.append("Attempt ").append(i + 1).append("/").append(MAX_CYCLE_ATTEMPTS)
+                            .append(":\n").append(attemptReports.get(i)).append("\n\n");
+                }
+                combined.append("Total: placed ").append(placedSoFar).append(" of ").append(NUMBER_OF_BETS)
+                        .append(" target bets across ").append(attemptReports.size()).append(" attempt(s).");
+                response = combined.toString();
             }
         } catch (Exception e) {
             log.error("Autonomous combo betting failed", e);
@@ -173,7 +224,22 @@ public class AutoComboBettingScheduler {
         return response;
     }
 
-    private String buildPrompt(BigDecimal betSize, String shortlistJson, String positionsJson) {
+    /** The Kalshi market tickers of every open market position — used to detect, by simple set
+     *  difference, how many NEW positions appeared after an attempt (i.e. bets that actually executed),
+     *  independent of however the model's own report happens to word it. */
+    private static Set<String> marketTickers(PositionsView positions) {
+        Set<String> tickers = new HashSet<>();
+        if (positions.marketPositions() != null) {
+            positions.marketPositions().forEach(mp -> {
+                if (mp.ticker() != null) {
+                    tickers.add(mp.ticker());
+                }
+            });
+        }
+        return tickers;
+    }
+
+    private String buildPrompt(BigDecimal betSize, int targetBets, String shortlistJson, String positionsJson) {
         return """
                 Autonomously place up to %d REAL combo bets right now — this actually executes with \
                 real money, no confirmation needed from me, that's the point of this scheduled task.
@@ -227,8 +293,8 @@ public class AutoComboBettingScheduler {
                 declined/not_filled.
                 Skip narrating the positions check or any other process detail unless something is \
                 actually actionable (e.g. a real leg conflict found) — just the bottom line per bet.\
-                """.formatted(NUMBER_OF_BETS, MIN_LEG_PROBABILITY, MIN_PAYOUT_MULTIPLE,
-                        shortlistJson, positionsJson, NUMBER_OF_BETS, betSize, NUMBER_OF_BETS);
+                """.formatted(targetBets, MIN_LEG_PROBABILITY, MIN_PAYOUT_MULTIPLE,
+                        shortlistJson, positionsJson, targetBets, betSize, targetBets);
     }
 
     /** Every event ticker already tied up in the portfolio and therefore off-limits as a new combo
