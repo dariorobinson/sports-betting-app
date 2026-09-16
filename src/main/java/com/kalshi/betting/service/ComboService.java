@@ -324,7 +324,7 @@ public class ComboService {
         for (List<CandidateLegSet> tierGroup : byLiquidityTier.values()) {
             deduped.addAll(roundRobinByGroup(tierGroup, c -> c.legs().size(),
                     Comparator.comparing(CandidateLegSet::product).reversed(),
-                    Comparator.naturalOrder(), tierGroup.size()));
+                    Comparator.<Integer>naturalOrder(), tierGroup.size()));
         }
 
         // Phase 4: greedily select GAME-DISJOINT candidates so no two combos we place this cycle touch
@@ -666,7 +666,7 @@ public class ComboService {
         // data supports it.
         return roundRobinByGroup(sets, List::size,
                 Comparator.comparing(ComboService::legSetProduct).reversed(),
-                Comparator.naturalOrder(), SHORTLIST_MAX_LEGSETS);
+                Comparator.<Integer>naturalOrder(), SHORTLIST_MAX_LEGSETS);
     }
 
     /** Reorders {@code items} by round-robin across the group produced by {@code groupKey}: takes the
