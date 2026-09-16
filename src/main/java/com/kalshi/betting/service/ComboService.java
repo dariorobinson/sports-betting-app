@@ -24,16 +24,19 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -302,18 +305,27 @@ public class ComboService {
         }
         List<CandidateLegSet> deduped = new ArrayList<>(byGames.values());
 
-        // Phase 3: prioritize which candidates get PRICED FIRST (not which are eligible — the pool
-        // stays broad). Production data showed most degenerate ($1.00, no real liquidity) real quotes
-        // come from Challenger-tour tennis and prop-style markets (set-winner, spread, total): market
-        // makers frequently don't provide a genuine two-sided price for those specific combinations,
-        // regardless of how good the pre-priced estimate looks. Mainline moneylines (top-tour tennis,
-        // team GAME/MATCH winners) convert to real quotes far more often. So: fewest thin-liquidity
-        // legs first, then fewest legs, then highest probability. Thin markets are still eligible and
-        // still get priced if the budget isn't filled by more-liquid candidates first — this only
-        // reorders attempts to spend the pricing budget where it's more likely to actually convert.
-        deduped.sort(Comparator.comparingLong((CandidateLegSet c) -> thinLiquidityLegCount(c.legs()))
-                .thenComparingInt(c -> c.legs().size())
-                .thenComparing(Comparator.comparing(CandidateLegSet::product).reversed()));
+        // Phase 3: reorder candidates for PRICING PRIORITY (not eligibility — the pool stays broad).
+        // Two considerations, applied in order:
+        // (a) Liquidity tier: production data showed most degenerate ($1.00, no real liquidity) real
+        //     quotes come from Challenger-tour tennis and prop-style markets — market makers frequently
+        //     don't provide a genuine two-sided price for those, regardless of the pre-priced estimate.
+        //     Liquid (mainline moneyline) candidates are tried first, tier by tier.
+        // (b) WITHIN each liquidity tier: balance across leg-counts via round-robin instead of a single
+        //     sort direction — production data showed a plain sort (either direction) let the pricing
+        //     budget get monopolized entirely by one leg-count (first all 2-leg; when reversed, all 4-5
+        //     leg), leaving every other leg-count completely untried. Round-robin guarantees a genuine
+        //     mix survives into the candidates actually selected for pricing below.
+        Map<Long, List<CandidateLegSet>> byLiquidityTier = new TreeMap<>();
+        for (CandidateLegSet c : deduped) {
+            byLiquidityTier.computeIfAbsent(thinLiquidityLegCount(c.legs()), k -> new ArrayList<>()).add(c);
+        }
+        deduped = new ArrayList<>();
+        for (List<CandidateLegSet> tierGroup : byLiquidityTier.values()) {
+            deduped.addAll(roundRobinByGroup(tierGroup, c -> c.legs().size(),
+                    Comparator.comparing(CandidateLegSet::product).reversed(),
+                    Comparator.naturalOrder(), tierGroup.size()));
+        }
 
         // Phase 4: greedily select GAME-DISJOINT candidates so no two combos we place this cycle touch
         // the same underlying game (no correlated/overlapping exposure).
@@ -613,10 +625,13 @@ public class ComboService {
 
     /** All combinations of the given favorites, of size 2..{@code maxLegs}, whose product-of-leg-
      *  probabilities lands in [{@code minCombo}, {@code maxCombo}] — i.e. low enough to pay the required
-     *  multiple, but not implausibly low. Ordered so the FEWEST-leg, highest-probability qualifying
-     *  combos come first: that's "add just enough legs to hit the multiple," which keeps the combo as
-     *  safe as possible while still paying out. Capped to {@link #SHORTLIST_MAX_LEGSETS}. Each favorite
-     *  is from a distinct event, so combinations never double-pick the same game. */
+     *  multiple, but not implausibly low. Ordered MOST-legs-first, not fewest: with ~16 favorites,
+     *  2-leg combinations alone (C(16,2)=120) vastly outnumber the {@link #SHORTLIST_MAX_LEGSETS} cap,
+     *  so a fewest-first sort meant this cap was filled entirely by 2-leg combos and 3-5 leg combos
+     *  were never even generated past this point — confirmed in production (0/6 real qualifiers, all
+     *  2-leg, across two cycles). Stacking more strong legs is the whole point of allowing up to 5 —
+     *  it gives more margin below the payout ceiling than a 2-leg combo sitting right at the edge.
+     *  Each favorite is from a distinct event, so combinations never double-pick the same game. */
     private static List<List<FavoriteLeg>> candidateLegSets(List<FavoriteLeg> favs, BigDecimal minCombo,
                                                             BigDecimal maxCombo, int maxLegs) {
         List<List<FavoriteLeg>> sets = new ArrayList<>();
@@ -642,11 +657,51 @@ public class ComboService {
                 sets.add(legs);
             }
         }
-        // Fewest legs first, then highest probability (closest to the ceiling) — the safest combo that
-        // still pays the multiple, with the least stacking.
-        sets.sort(Comparator.comparingInt((List<FavoriteLeg> s) -> s.size())
-                .thenComparing(Comparator.comparing(ComboService::legSetProduct).reversed()));
-        return sets.stream().limit(SHORTLIST_MAX_LEGSETS).toList();
+        // Balance across leg-counts rather than sorting globally by size in either direction: a plain
+        // fewest-first (or most-first) sort just replaces one monoculture with another once a hard cap
+        // is applied — confirmed in production both ways (fewest-first: cap filled entirely by 2-leg
+        // combos, 0/6 real qualifiers; most-first: cap filled entirely by 4-5 leg combos, 0 two-leg or
+        // three-leg combos survived at all). Round-robin across leg-count groups (best probability
+        // within each) instead, so the cap holds a genuine MIX of leg-counts whenever the underlying
+        // data supports it.
+        return roundRobinByGroup(sets, List::size,
+                Comparator.comparing(ComboService::legSetProduct).reversed(),
+                Comparator.naturalOrder(), SHORTLIST_MAX_LEGSETS);
+    }
+
+    /** Reorders {@code items} by round-robin across the group produced by {@code groupKey}: takes the
+     *  best (per {@code within}) remaining item from each group in turn (groups visited in
+     *  {@code groupOrder}), until {@code limit} items are collected or every group is exhausted. Used
+     *  so a hard downstream cap can't be monopolized by whichever group a single global sort would
+     *  otherwise favor — see call sites for the production evidence that motivated this. */
+    private static <T, K> List<T> roundRobinByGroup(List<T> items, Function<T, K> groupKey,
+                                                     Comparator<T> within, Comparator<K> groupOrder,
+                                                     int limit) {
+        Map<K, List<T>> groups = new TreeMap<>(groupOrder);
+        for (T item : items) {
+            groups.computeIfAbsent(groupKey.apply(item), k -> new ArrayList<>()).add(item);
+        }
+        groups.values().forEach(group -> group.sort(within));
+
+        List<T> result = new ArrayList<>(Math.min(limit, items.size()));
+        Map<K, Integer> nextIndex = new HashMap<>();
+        boolean progress = true;
+        while (result.size() < limit && progress) {
+            progress = false;
+            for (Map.Entry<K, List<T>> entry : groups.entrySet()) {
+                if (result.size() >= limit) {
+                    break;
+                }
+                int i = nextIndex.getOrDefault(entry.getKey(), 0);
+                List<T> group = entry.getValue();
+                if (i < group.size()) {
+                    result.add(group.get(i));
+                    nextIndex.put(entry.getKey(), i + 1);
+                    progress = true;
+                }
+            }
+        }
+        return result;
     }
 
     private static BigDecimal legSetProduct(List<FavoriteLeg> legSet) {
