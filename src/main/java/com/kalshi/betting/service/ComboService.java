@@ -255,7 +255,7 @@ public class ComboService {
      *                         pricing attempts together with {@link #SHORTLIST_MAX_PRICING_ATTEMPTS})
      * @param maxCollections   how many collections to survey
      */
-    public List<PricedComboCandidate> buildPricedCandidateShortlist(
+    public ShortlistResult buildPricedCandidateShortlist(
             int minLegProbPercent, BigDecimal minPayoutMultiple, int maxLegs,
             int maxCandidates, int maxCollections, Set<String> excludeEventTickers) {
         BigDecimal minLeg = BigDecimal.valueOf(minLegProbPercent).movePointLeft(2);
@@ -283,9 +283,11 @@ public class ComboService {
         // GAME, played TODAY, not already committed — across any sports market type (moneyline, spread,
         // total, player/game props), whichever is the strongest qualifying favorite for that game.
         List<CandidateLegSet> candidates = new ArrayList<>();
+        int favoritesFound = 0;
         for (ComboCollectionSummary collection : collections) {
             List<FavoriteLeg> favorites = strongestFavoritesInCollection(
                     collection.collectionTicker(), minLeg, sportsSeries, today, excludeGameKeys);
+            favoritesFound += favorites.size();
             for (List<FavoriteLeg> legSet :
                     candidateLegSets(favorites, SHORTLIST_MIN_COMBO_PROBABILITY, candidateCeiling, maxLegs)) {
                 candidates.add(new CandidateLegSet(collection.collectionTicker(), legSet, legSetProduct(legSet)));
@@ -332,7 +334,9 @@ public class ComboService {
         // Phase 5: RFQ-price the selected candidates; keep quotes that actually pay the multiple.
         List<PricedComboCandidate> out = new ArrayList<>();
         int consecutiveFailures = 0;
+        int pricingAttemptsMade = 0;
         for (CandidateLegSet c : selected) {
+            pricingAttemptsMade++;
             List<LegSelection> selections = c.legs().stream()
                     .map(f -> new LegSelection(f.eventTicker(), f.marketTicker(), f.side()))
                     .toList();
@@ -377,8 +381,10 @@ public class ComboService {
         out.sort(Comparator.comparing(
                 (PricedComboCandidate c) -> parseDollarOrZero(c.yesAskDollars())).reversed());
         log.info("Shortlist build: {} priced candidate(s) reached the {}x payout floor after {} pricing "
-                + "attempt(s)", out.size(), minPayoutMultiple.toPlainString(), selected.size());
-        return out;
+                + "attempt(s)", out.size(), minPayoutMultiple.toPlainString(), pricingAttemptsMade);
+        ShortlistDiagnostics diagnostics = new ShortlistDiagnostics(collections.size(), excludeGameKeys.size(),
+                favoritesFound, candidates.size(), deduped.size(), selected.size(), pricingAttemptsMade);
+        return new ShortlistResult(out, diagnostics);
     }
 
     /** A generated (not-yet-priced) candidate: which collection, its favorite legs, and the product of

@@ -7,6 +7,7 @@ import com.kalshi.betting.service.ComboService;
 import com.kalshi.betting.service.PortfolioService;
 import com.kalshi.betting.web.dto.PositionsView;
 import com.kalshi.betting.web.dto.PricedComboCandidate;
+import com.kalshi.betting.web.dto.ShortlistResult;
 import net.dv8tion.jda.api.JDA;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -152,20 +153,23 @@ public class AutoComboBettingScheduler {
                 // model only has to select and place — the main Anthropic cost saving. Candidates are
                 // built only from events NOT already committed, and are leg-disjoint from each other.
                 // maxCandidates scales to what's still needed, not always the full daily target.
-                List<PricedComboCandidate> shortlist = comboService.buildPricedCandidateShortlist(
+                ShortlistResult shortlistResult = comboService.buildPricedCandidateShortlist(
                         MIN_LEG_PROBABILITY, new BigDecimal(MIN_PAYOUT_MULTIPLE), MAX_COMBO_LEGS,
                         remaining * 4, MAX_COLLECTIONS_TO_SURVEY, committedEvents);
+                List<PricedComboCandidate> shortlist = shortlistResult.candidates();
+                // Included in every report (not just logs) so "no qualifying combos" is diagnosable
+                // straight from Discord — which phase produced zero — without pulling EC2 logs at all.
+                String diagnosticsLine = "[" + shortlistResult.diagnostics().summarize() + "]";
 
                 if (shortlist.isEmpty()) {
                     // No qualifying NEW combos priced this attempt — don't spend a single Anthropic
                     // token on it. Real RFQ pricing is a live, moment-to-moment thing, so simply
                     // retrying (fresh quotes) can succeed even though nothing changed in our own logic.
                     log.info("Autonomous combo betting attempt {}/{}: no qualifying new combos — "
-                            + "skipping the model call.", attempt, MAX_CYCLE_ATTEMPTS);
+                            + "skipping the model call. {}", attempt, MAX_CYCLE_ATTEMPTS, diagnosticsLine);
                     attemptReports.add("No NEW combos reached the " + MIN_PAYOUT_MULTIPLE
-                            + "x payout floor with " + MIN_LEG_PROBABILITY + "%+ legs (excluded "
-                            + committedEvents.size() + " already-committed events across "
-                            + MAX_COLLECTIONS_TO_SURVEY + " collections). No bets placed this attempt.");
+                            + "x payout floor with " + MIN_LEG_PROBABILITY + "%+ legs. No bets placed "
+                            + "this attempt. " + diagnosticsLine);
                 } else {
                     String shortlistJson = ToolServices.toJson(shortlist);
                     String positionsJson = ToolServices.toJson(positionsBefore);
@@ -193,7 +197,7 @@ public class AutoComboBettingScheduler {
                     log.info("Autonomous combo betting attempt {}/{}: {} new position(s) detected "
                                     + "(placedSoFar={}/{})", attempt, MAX_CYCLE_ATTEMPTS, placedThisAttempt,
                             placedSoFar, NUMBER_OF_BETS);
-                    attemptReports.add(attemptResponse);
+                    attemptReports.add(attemptResponse + "\n" + diagnosticsLine);
                 }
 
                 if (placedSoFar < NUMBER_OF_BETS && attempt < MAX_CYCLE_ATTEMPTS) {
