@@ -140,6 +140,12 @@ public class AutoComboBettingScheduler {
 
             int placedSoFar = 0;
             List<String> attemptReports = new ArrayList<>();
+            // Accumulates the event tickers of every candidate leg that got RFQ-priced but did NOT
+            // qualify in an EARLIER attempt of this same run. Without this, a retry just re-derives and
+            // re-prices the identical top-priority candidates from the same same-day favorite pool and
+            // re-fails on the same ones every time — RFQ pricing for a specific illiquid combo doesn't
+            // meaningfully change second-to-second, so only trying genuinely DIFFERENT candidates helps.
+            Set<String> rejectedInEarlierAttempts = new HashSet<>();
             for (int attempt = 1; attempt <= MAX_CYCLE_ATTEMPTS && placedSoFar < NUMBER_OF_BETS; attempt++) {
                 int remaining = NUMBER_OF_BETS - placedSoFar;
 
@@ -147,16 +153,18 @@ public class AutoComboBettingScheduler {
                 // now also includes anything placed in an EARLIER attempt of this same run) and as the
                 // "before" snapshot for detecting whether this attempt actually places anything.
                 PositionsView positionsBefore = portfolioService.getPositions();
-                Set<String> committedEvents = committedEventTickers(positionsBefore);
+                Set<String> excludeEvents = new HashSet<>(committedEventTickers(positionsBefore));
+                excludeEvents.addAll(rejectedInEarlierAttempts);
 
                 // Do the expensive survey + candidate pricing in Java (deterministic, no model) so the
                 // model only has to select and place — the main Anthropic cost saving. Candidates are
-                // built only from events NOT already committed, and are leg-disjoint from each other.
-                // maxCandidates scales to what's still needed, not always the full daily target.
+                // built only from events NOT already committed/rejected, and are leg-disjoint from
+                // each other. maxCandidates scales to what's still needed, not the full daily target.
                 ShortlistResult shortlistResult = comboService.buildPricedCandidateShortlist(
                         MIN_LEG_PROBABILITY, new BigDecimal(MIN_PAYOUT_MULTIPLE), MAX_COMBO_LEGS,
-                        remaining * 4, MAX_COLLECTIONS_TO_SURVEY, committedEvents);
+                        remaining * 4, MAX_COLLECTIONS_TO_SURVEY, excludeEvents);
                 List<PricedComboCandidate> shortlist = shortlistResult.candidates();
+                rejectedInEarlierAttempts.addAll(shortlistResult.rejectedEventTickers());
                 // Included in every report (not just logs) so "no qualifying combos" is diagnosable
                 // straight from Discord — which phase produced zero — without pulling EC2 logs at all.
                 String diagnosticsLine = "[" + shortlistResult.diagnostics().summarize() + "]";

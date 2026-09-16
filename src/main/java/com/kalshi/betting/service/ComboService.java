@@ -333,6 +333,14 @@ public class ComboService {
 
         // Phase 5: RFQ-price the selected candidates; keep quotes that actually pay the multiple.
         List<PricedComboCandidate> out = new ArrayList<>();
+        // Event tickers of every leg in a candidate that was actually RFQ-priced but did NOT qualify —
+        // returned so a RETRYING caller (see AutoComboBettingScheduler) can exclude them on the next
+        // attempt. Without this, a retry re-derives the exact same top-priority candidates from the
+        // same same-day favorite pool and just re-fails on the same ones — production data showed 5
+        // consecutive retries selecting/pricing the IDENTICAL 4 candidates every time. Excluding
+        // already-rejected legs forces subsequent attempts to reach genuinely different candidates
+        // deeper in the (usually much larger) favorite pool.
+        Set<String> rejectedEventTickers = new HashSet<>();
         int consecutiveFailures = 0;
         int pricingAttemptsMade = 0;
         for (CandidateLegSet c : selected) {
@@ -346,6 +354,7 @@ public class ComboService {
             } catch (RuntimeException e) {
                 log.warn("Shortlist: pricing candidate {} in {} failed: {}",
                         selections, c.collectionTicker(), e.getMessage());
+                c.legs().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
                 if (++consecutiveFailures >= SHORTLIST_MAX_CONSECUTIVE_FAILURES && out.isEmpty()) {
                     log.warn("Shortlist: {} consecutive pricing failures and nothing priced yet — stopping",
                             consecutiveFailures);
@@ -363,6 +372,7 @@ public class ComboService {
             if (qualifies) {
                 out.add(toCandidate(c.collectionTicker(), c.legs(), priced));
             } else {
+                c.legs().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
                 // Log exactly why, so a persistent "0 qualified" is diagnosable instead of guessed at:
                 // was it never quoted at all, or quoted but the REAL price came back worse than the
                 // pre-priced product-of-legs estimate (a real market-maker margin/spread the estimate
@@ -383,8 +393,9 @@ public class ComboService {
         log.info("Shortlist build: {} priced candidate(s) reached the {}x payout floor after {} pricing "
                 + "attempt(s)", out.size(), minPayoutMultiple.toPlainString(), pricingAttemptsMade);
         ShortlistDiagnostics diagnostics = new ShortlistDiagnostics(collections.size(), excludeGameKeys.size(),
-                favoritesFound, candidates.size(), deduped.size(), selected.size(), pricingAttemptsMade);
-        return new ShortlistResult(out, diagnostics);
+                favoritesFound, candidates.size(), deduped.size(), selected.size(), pricingAttemptsMade,
+                out.size());
+        return new ShortlistResult(out, diagnostics, rejectedEventTickers);
     }
 
     /** A generated (not-yet-priced) candidate: which collection, its favorite legs, and the product of

@@ -14,13 +14,14 @@ public record ShortlistDiagnostics(
         int candidateLegSetsBeforeDedup,
         int distinctCandidatesAfterDedup,
         int selectedForPricing,
-        int pricingAttemptsMade
+        int pricingAttemptsMade,
+        int qualifiedAfterPricing
 ) {
     public String summarize() {
         return "surveyed " + collectionsSurveyed + " collection(s), excluded " + excludedCommittedGames
                 + " committed game(s), found " + favoritesFound + " favorite(s) today -> "
                 + candidateLegSetsBeforeDedup + " candidate combo(s) (" + distinctCandidatesAfterDedup
                 + " distinct) -> " + selectedForPricing + " selected, " + pricingAttemptsMade
-                + " actually RFQ-priced";
+                + " actually RFQ-priced, " + qualifiedAfterPricing + " qualified";
     }
 }
