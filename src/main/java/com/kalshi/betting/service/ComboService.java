@@ -149,6 +149,45 @@ public class ComboService {
         return LEAGUE_ALLOWLIST.stream().anyMatch(upper::startsWith);
     }
 
+    /** Human-readable league name per {@link #LEAGUE_ALLOWLIST} root, for Discord-facing descriptions
+     *  (e.g. "NFL (Lions) vs Packers") — never the raw Kalshi series ticker. */
+    private static final Map<String, String> LEAGUE_DISPLAY_NAMES = Map.ofEntries(
+            Map.entry("KXNFL", "NFL"), Map.entry("KXNCAAF", "NCAAF"),
+            Map.entry("KXNBA", "NBA"), Map.entry("KXWNBA", "WNBA"),
+            Map.entry("KXMLB", "MLB"), Map.entry("KXNHL", "NHL"),
+            Map.entry("KXUFC", "UFC"), Map.entry("KXPGA", "PGA"),
+            Map.entry("KXNASCAR", "NASCAR"), Map.entry("KXF1RACE", "F1"),
+            Map.entry("KXBOXING", "Boxing"),
+            Map.entry("KXATPMATCH", "ATP"), Map.entry("KXWTAMATCH", "WTA"),
+            Map.entry("KXEPL", "Premier League"), Map.entry("KXLALIGA", "La Liga"),
+            Map.entry("KXBUNDESLIGA", "Bundesliga"), Map.entry("KXSERIEA", "Serie A"),
+            Map.entry("KXLIGUE1", "Ligue 1"), Map.entry("KXMLS", "MLS"));
+
+    private static String leagueDisplayName(String eventTicker) {
+        String series = leadingSeriesTicker(eventTicker).toUpperCase(java.util.Locale.ROOT);
+        for (Map.Entry<String, String> e : LEAGUE_DISPLAY_NAMES.entrySet()) {
+            if (series.startsWith(e.getKey())) {
+                return e.getValue();
+            }
+        }
+        return series; // shouldn't happen given the allowlist filter, but never hide data if it does
+    }
+
+    /** "League (Team) vs Opponent (probability%)" — e.g. "NFL (Lions) vs Packers (78%)". The
+     *  parenthesized side is the one the shortlist would bet YES on. Used everywhere a leg is
+     *  described back to the user, instead of raw tickers. */
+    private static String describeLeg(FavoriteLeg f) {
+        String opponent = (f.opponentLabel() == null || f.opponentLabel().isBlank()) ? "?" : f.opponentLabel();
+        return leagueDisplayName(f.eventTicker()) + " (" + f.label() + ") vs " + opponent
+                + " (" + f.prob().movePointRight(2).setScale(0, RoundingMode.HALF_UP) + "%)";
+    }
+
+    /** Human-readable description of a whole leg-set, e.g. "NFL (Lions) vs Packers (78%) + MLB
+     *  (Yankees) vs Red Sox (82%)". */
+    private static String describeLegSet(List<FavoriteLeg> legs) {
+        return legs.stream().map(ComboService::describeLeg).collect(Collectors.joining(" + "));
+    }
+
     private final KalshiApiClient client;
     private final ActiveComboLegTracker activeComboLegTracker;
     private final QuoteExecutionSignal quoteExecutionSignal;
@@ -323,15 +362,24 @@ public class ComboService {
         // total, player/game props), whichever is the strongest qualifying favorite for that game.
         List<CandidateLegSet> candidates = new ArrayList<>();
         int favoritesFound = 0;
+        // Every distinct favorite found today, deduped by game (the same game can appear in multiple
+        // collections) — kept and returned even if no COMBO ever forms from them, so a "0 candidates"
+        // cycle still has something real and human-readable to show instead of just a bare count.
+        Map<String, FavoriteLeg> favoritesByGame = new LinkedHashMap<>();
         for (ComboCollectionSummary collection : collections) {
             List<FavoriteLeg> favorites = strongestFavoritesInCollection(
                     collection.collectionTicker(), minLeg, sportsSeries, today, excludeGameKeys);
             favoritesFound += favorites.size();
+            favorites.forEach(f -> favoritesByGame.putIfAbsent(gameKey(f.eventTicker()), f));
             for (List<FavoriteLeg> legSet :
                     candidateLegSets(favorites, SHORTLIST_MIN_COMBO_PROBABILITY, candidateCeiling, maxLegs)) {
                 candidates.add(new CandidateLegSet(collection.collectionTicker(), legSet, legSetProduct(legSet)));
             }
         }
+        List<String> availableFavorites = favoritesByGame.values().stream()
+                .sorted(Comparator.comparing(FavoriteLeg::prob).reversed())
+                .map(ComboService::describeLeg)
+                .toList();
 
         // Phase 2: dedupe by GAME-key set (the same combo often appears under several collection
         // tickers) — keep the highest-probability instance of each distinct set of games.
@@ -407,11 +455,8 @@ public class ComboService {
                 log.warn("Shortlist: pricing candidate {} in {} failed: {}",
                         selections, c.collectionTicker(), e.getMessage());
                 c.legs().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
-                String failedSeries = c.legs().stream()
-                        .map(f -> leadingSeriesTicker(f.eventTicker()))
-                        .collect(Collectors.joining("+"));
-                rejectionDetails.add(c.legs().size() + "-leg [" + failedSeries + "] (est="
-                        + c.product().toPlainString() + "): pricing call failed (" + e.getMessage() + ")");
+                rejectionDetails.add(describeLegSet(c.legs()) + " — pricing call failed ("
+                        + e.getMessage() + ")");
                 if (++consecutiveFailures >= SHORTLIST_MAX_CONSECUTIVE_FAILURES && out.isEmpty()) {
                     log.warn("Shortlist: {} consecutive pricing failures and nothing priced yet — stopping",
                             consecutiveFailures);
@@ -435,12 +480,8 @@ public class ComboService {
                 // pre-priced product-of-legs estimate (a real market-maker margin/spread the estimate
                 // doesn't account for)?
                 String reason = !priced.quoted() ? "not quoted (no market maker responded)"
-                        : "quoted real=" + priced.yesAskDollars() + " (need <= " + maxCombo.toPlainString() + ")";
-                String series = c.legs().stream()
-                        .map(f -> leadingSeriesTicker(f.eventTicker()))
-                        .collect(Collectors.joining("+"));
-                rejectionDetails.add(c.legs().size() + "-leg [" + series + "] (est="
-                        + c.product().toPlainString() + "): " + reason);
+                        : "real price only pays ~" + payoutMultipleFor(comboProb) + "x (needed " + minPayoutMultiple + "x)";
+                rejectionDetails.add(describeLegSet(c.legs()) + " — " + reason);
                 log.info("Shortlist: DID NOT qualify — estimatedProduct={}, quoted={}, realYesAskDollars={}, "
                                 + "realImpliedProb={} (need <= {} and >= {}) — collection={}, games={}",
                         c.product().toPlainString(), priced.quoted(), priced.yesAskDollars(), comboProb,
@@ -458,7 +499,7 @@ public class ComboService {
         ShortlistDiagnostics diagnostics = new ShortlistDiagnostics(collections.size(), excludeGameKeys.size(),
                 favoritesFound, candidates.size(), deduped.size(), selected.size(), pricingAttemptsMade,
                 out.size());
-        return new ShortlistResult(out, diagnostics, rejectedEventTickers, rejectionDetails);
+        return new ShortlistResult(out, diagnostics, rejectedEventTickers, rejectionDetails, availableFavorites);
     }
 
     /** A generated (not-yet-priced) candidate: which collection, its favorite legs, and the product of
@@ -673,7 +714,7 @@ public class ComboService {
             }
             if (best == null || yesProb.compareTo(best.prob()) > 0) {
                 best = new FavoriteLeg(leg.eventTicker(), market.ticker(), "YES",
-                        market.yesLabel(), yesProb);
+                        market.yesLabel(), market.noLabel(), yesProb);
             }
         }
         return (best != null && best.prob().compareTo(minLeg) >= 0) ? best : null;
@@ -794,9 +835,20 @@ public class ComboService {
         return v == null ? BigDecimal.ZERO : v;
     }
 
-    /** A single event's favored YES outcome, with its market-implied probability. */
+    /** Payout multiple (1/probability) as a short decimal string, for human-facing messages — e.g.
+     *  a real quote of 0.7420 reads as "~1.35x", more meaningful than the raw dollar price. */
+    private static String payoutMultipleFor(BigDecimal probability) {
+        if (probability == null || probability.signum() <= 0) {
+            return "?";
+        }
+        return BigDecimal.ONE.divide(probability, 2, RoundingMode.HALF_UP).toPlainString();
+    }
+
+    /** A single event's favored YES outcome, with its market-implied probability. {@code label} is
+     *  the favored side's name (e.g. "Lions"); {@code opponentLabel} is the other side (e.g. "Packers")
+     *  — kept so the leg can be described to a human as "NFL (Lions) vs Packers", not a raw ticker. */
     private record FavoriteLeg(String eventTicker, String marketTicker, String side, String label,
-                               BigDecimal prob) {
+                               String opponentLabel, BigDecimal prob) {
     }
 
     /**

@@ -171,9 +171,17 @@ public class AutoComboBettingScheduler {
                 // straight from Discord — which phase produced zero — without pulling EC2 logs at all.
                 String diagnosticsLine = "[" + shortlistResult.diagnostics().summarize() + "]";
                 // Per-rejection reason (not quoted vs. quoted-but-worse-than-estimate) — the actual gap
-                // between the pre-priced estimate and the real market, straight in the report.
+                // between the pre-priced estimate and the real market, in plain league/team names, not
+                // raw tickers ("NFL (Lions) vs Packers", not "KXNFLGAME-...").
                 String rejectionsLine = shortlistResult.rejectionDetails().isEmpty() ? ""
-                        : "\nRejected: " + String.join("; ", shortlistResult.rejectionDetails());
+                        : "\nTried: " + String.join("; ", shortlistResult.rejectionDetails());
+                // When no combo was even FORMED (e.g. favorites existed but none combined into the
+                // payout band), there's nothing to put in "Tried:" — show the individual favorites that
+                // WERE found instead, so the report never just dead-ends on a bare count with nothing
+                // real to look at.
+                String favoritesLine = shortlistResult.availableFavorites().isEmpty() ? ""
+                        : "\nToday's favorites (no combo formed from them): "
+                                + String.join("; ", shortlistResult.availableFavorites());
 
                 if (shortlist.isEmpty()) {
                     // No qualifying NEW combos priced this attempt — don't spend a single Anthropic
@@ -181,9 +189,10 @@ public class AutoComboBettingScheduler {
                     // retrying (fresh quotes) can succeed even though nothing changed in our own logic.
                     log.info("Autonomous combo betting attempt {}/{}: no qualifying new combos — "
                             + "skipping the model call. {}", attempt, MAX_CYCLE_ATTEMPTS, diagnosticsLine);
+                    String detailLine = !shortlistResult.rejectionDetails().isEmpty() ? rejectionsLine : favoritesLine;
                     attemptReports.add("No NEW combos reached the " + MIN_PAYOUT_MULTIPLE
                             + "x payout floor with " + MIN_LEG_PROBABILITY + "%+ legs. No bets placed "
-                            + "this attempt. " + diagnosticsLine + rejectionsLine);
+                            + "this attempt. " + diagnosticsLine + detailLine);
                 } else {
                     String shortlistJson = ToolServices.toJson(shortlist);
                     String positionsJson = ToolServices.toJson(positionsBefore);
@@ -232,13 +241,20 @@ public class AutoComboBettingScheduler {
                 combined.append("Total: placed ").append(placedSoFar).append(" of ").append(NUMBER_OF_BETS)
                         .append(" target bets across ").append(attemptReports.size()).append(" attempt(s).");
                 if (placedSoFar < NUMBER_OF_BETS) {
-                    // Couldn't fully automate it — the "Rejected: ..." lines above list every real
-                    // combo/price we actually tried this cycle (not just a technical log), so you can
-                    // manually place one on Kalshi yourself if one looks worth it despite missing the
-                    // 1.6x floor (e.g. a real quote that only reached ~1.35x).
-                    combined.append("\n\nCouldn't automate the rest — see the \"Rejected:\" lines above "
-                            + "for the specific combos/prices actually tried this cycle. Feel free to "
-                            + "place any of those manually on Kalshi if one looks worth it to you.");
+                    // Couldn't fully automate it — point at whichever real, human-readable data is
+                    // actually present above ("Tried:" if combos were priced, "Today's favorites" if
+                    // individual legs were found but never combined into one) so this note is never
+                    // just a dead end pointing at something that doesn't exist in this report.
+                    boolean haveTried = attemptReports.stream().anyMatch(r -> r.contains("\nTried: "));
+                    boolean haveFavorites = attemptReports.stream().anyMatch(r -> r.contains("\nToday's favorites"));
+                    String pointer = haveTried
+                            ? "the \"Tried:\" lines above for the specific combos/prices actually tried"
+                            : haveFavorites
+                                    ? "the \"Today's favorites\" lines above for the individual plays found"
+                                    : "the details above";
+                    combined.append("\n\nCouldn't automate the rest — see ").append(pointer)
+                            .append(" this cycle. Feel free to place any of those manually on Kalshi "
+                                    + "if one looks worth it to you.");
                 }
                 response = combined.toString();
             }
