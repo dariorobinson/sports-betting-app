@@ -317,17 +317,59 @@ public class ComboService {
     }
 
     /**
+     * Same as {@link #priceCombo(String, List)}, but the RFQ is sized to what a real ~{@code targetDollars}
+     * trade would actually cost, not a single token contract. Production data showed a 1-contract RFQ
+     * routinely comes back with a degenerate/placeholder-grade quote (implied price pinned near $1.00 —
+     * ~1.00x "payout" — regardless of the combo's real legs), while sizing to the same trade a human would
+     * actually place on the Kalshi app gets a genuine, competitive market-maker price — exactly the same
+     * two-phase pattern {@link #placeComboBet} already uses for real orders (an indicative 1-contract RFQ
+     * only to learn the going price and convert dollars to a contract count, then a REAL RFQ at that
+     * size). Still doesn't place an order or risk money — every RFQ here is deleted before returning.
+     */
+    public ComboPriceResponse priceComboAtSize(String collectionTicker, List<LegSelection> legs, BigDecimal targetDollars) {
+        var createResponse = createComboMarket(collectionTicker, legs);
+        String eventTicker = createResponse.eventTicker();
+        String marketTicker = createResponse.marketTicker();
+
+        RfqAttempt attempt = requestRealSizedQuote(marketTicker, targetDollars);
+        try {
+            return attempt.quote().map(q -> ComboPriceResponse.quoted(eventTicker, marketTicker, q))
+                    .orElseGet(() -> ComboPriceResponse.unquoted(eventTicker, marketTicker));
+        } finally {
+            cleanupRfq(attempt.rfqId());
+        }
+    }
+
+    /** Learns the going price via a throwaway 1-contract RFQ, converts {@code targetDollars} into a
+     *  contract count at that price, then requests a REAL RFQ at that realistic size — a 1-contract-only
+     *  quote is not representative of what a genuine trade would cost (see {@link #priceComboAtSize}). */
+    private RfqAttempt requestRealSizedQuote(String marketTicker, BigDecimal targetDollars) {
+        RfqAttempt indicative = requestQuote(marketTicker, RFQ_QUOTE_REQUEST_CONTRACTS);
+        cleanupRfq(indicative.rfqId());
+        if (indicative.quote().isEmpty()) {
+            return indicative;
+        }
+        BigDecimal price = yesAskPrice(indicative.quote().get());
+        if (price == null || price.signum() <= 0) {
+            return new RfqAttempt(indicative.rfqId(), Optional.empty());
+        }
+        int desiredContracts = Math.max(1, targetDollars.divide(price, 0, RoundingMode.DOWN).intValue());
+        return requestQuote(marketTicker, desiredContracts);
+    }
+
+    /**
      * Deterministically (no model) builds a bounded shortlist of already-RFQ-priced combo candidates
      * for the autonomous scheduler to inject into its prompt — replacing the model's expensive
      * survey + per-candidate pricing round-trips. Strategy: enumerate sports combo collections, take
      * each event's strongest YES favorite whose implied probability clears {@code minLegProbPercent},
      * then stack as MANY of those favorites (2..{@code maxLegs}) as it takes for the combined
      * probability to fall to/under the payout ceiling implied by {@code minPayoutMultiple} — i.e. the
-     * combo pays at least that multiple — and RFQ-price the most promising via the existing
-     * {@link #priceCombo} path (no money risk — RFQs are deleted). Only real, quoted combos that
-     * actually clear the payout floor are returned, safest (fewest legs / highest probability among
-     * those that still hit the multiple) first. Pricing is hard-capped at
-     * {@link #SHORTLIST_MAX_PRICING_ATTEMPTS}.
+     * combo pays at least that multiple — and RFQ-price the most promising via
+     * {@link #priceComboAtSize}, sized to {@code targetDollarsPerBet} (a 1-contract-only quote is not
+     * representative of a real trade's price — see that method) — no money risk, RFQs are deleted
+     * either way. Only real, quoted combos that actually clear the payout floor are returned, safest
+     * (fewest legs / highest probability among those that still hit the multiple) first. Pricing is
+     * hard-capped at {@link #SHORTLIST_MAX_PRICING_ATTEMPTS}.
      *
      * @param minPayoutMultiple minimum payout multiple a combo must reach (e.g. 1.6 → combined
      *                          probability must be ≤ 1/1.6 = 0.625)
@@ -335,10 +377,12 @@ public class ComboService {
      * @param maxCandidates    soft target for how many priced candidates to try to return (also caps
      *                         pricing attempts together with {@link #SHORTLIST_MAX_PRICING_ATTEMPTS})
      * @param maxCollections   how many collections to survey
+     * @param targetDollarsPerBet the real dollar size each candidate is RFQ-priced at
      */
     public ShortlistResult buildPricedCandidateShortlist(
             int minLegProbPercent, BigDecimal minPayoutMultiple, int maxLegs,
-            int maxCandidates, int maxCollections, Set<String> excludeEventTickers) {
+            int maxCandidates, int maxCollections, Set<String> excludeEventTickers,
+            BigDecimal targetDollarsPerBet) {
         BigDecimal minLeg = BigDecimal.valueOf(minLegProbPercent).movePointLeft(2);
         // Payout ≈ 1/probability, so a min payout multiple is a MAX combined probability.
         BigDecimal maxCombo = BigDecimal.ONE.divide(minPayoutMultiple, 4, RoundingMode.HALF_UP);
@@ -463,7 +507,7 @@ public class ComboService {
                         .toList();
                 ComboPriceResponse priced;
                 try {
-                    priced = priceCombo(c.collectionTicker(), selections);
+                    priced = priceComboAtSize(c.collectionTicker(), selections, targetDollarsPerBet);
                 } catch (RuntimeException e) {
                     log.warn("Shortlist: pricing candidate {} in {} failed: {}",
                             selections, c.collectionTicker(), e.getMessage());

@@ -164,7 +164,7 @@ public class AutoComboBettingScheduler {
                 // giving up on this attempt, not just a handful, since most candidates turn out degenerate.
                 ShortlistResult shortlistResult = comboService.buildPricedCandidateShortlist(
                         MIN_LEG_PROBABILITY, new BigDecimal(MIN_PAYOUT_MULTIPLE), MAX_COMBO_LEGS,
-                        remaining * 15, MAX_COLLECTIONS_TO_SURVEY, excludeEvents);
+                        remaining * 15, MAX_COLLECTIONS_TO_SURVEY, excludeEvents, betSize);
                 List<PricedComboCandidate> shortlist = shortlistResult.candidates();
                 rejectedInEarlierAttempts.addAll(shortlistResult.rejectedEventTickers());
                 // Included in every report (not just logs) so "no qualifying combos" is diagnosable
