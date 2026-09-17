@@ -177,9 +177,15 @@ public class ComboService {
      *  parenthesized side is the one the shortlist would bet YES on. Used everywhere a leg is
      *  described back to the user, instead of raw tickers. */
     private static String describeLeg(FavoriteLeg f) {
-        String opponent = (f.opponentLabel() == null || f.opponentLabel().isBlank()) ? "?" : f.opponentLabel();
-        return leagueDisplayName(f.eventTicker()) + " (" + f.label() + ") vs " + opponent
-                + " (" + f.prob().movePointRight(2).setScale(0, RoundingMode.HALF_UP) + "%)";
+        String pct = " (" + f.prob().movePointRight(2).setScale(0, RoundingMode.HALF_UP) + "%)";
+        String opponent = (f.opponentLabel() == null || f.opponentLabel().isBlank()) ? null : f.opponentLabel();
+        // Player/game props (e.g. "Cal Raleigh: 6+") have no real opposing side — Kalshi's "no" label for
+        // these is just the same proposition text, not an opponent. Rendering "X vs X" is nonsensical, so
+        // fall back to a plain "(League) Proposition" instead of forcing a fake "vs" for non-matchup legs.
+        if (opponent == null || opponent.equalsIgnoreCase(f.label())) {
+            return leagueDisplayName(f.eventTicker()) + " " + f.label() + pct;
+        }
+        return leagueDisplayName(f.eventTicker()) + " (" + f.label() + ") vs " + opponent + pct;
     }
 
     /** Human-readable description of a whole leg-set, e.g. "NFL (Lions) vs Packers (78%) + MLB
@@ -381,6 +387,19 @@ public class ComboService {
                 .map(ComboService::describeLeg)
                 .toList();
 
+        // Event tickers a RETRYING caller should exclude on its next attempt — see the field's full
+        // rationale below (Phase 5). Declared here (not just in Phase 5) because a favorites pool that
+        // combines into ZERO candidate leg-sets never reaches pricing at all, yet still needs excluding:
+        // without this, a same-day pool that's simply too thin/too-high-probability to ever combine under
+        // the payout ceiling gets re-derived and re-fails identically on every retry attempt — confirmed
+        // in production (the same single favorite, e.g. "Cal Raleigh: 6+", reported unchanged across all
+        // 6 attempts because nothing was ever excluded). Excluding it forces the next attempt to look at
+        // a genuinely different slice of the market instead of proving the same dead end six times.
+        Set<String> rejectedEventTickers = new HashSet<>();
+        if (candidates.isEmpty() && !favoritesByGame.isEmpty()) {
+            favoritesByGame.values().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
+        }
+
         // Phase 2: dedupe by GAME-key set (the same combo often appears under several collection
         // tickers) — keep the highest-probability instance of each distinct set of games.
         Map<Set<String>, CandidateLegSet> byGames = new LinkedHashMap<>();
@@ -427,16 +446,10 @@ public class ComboService {
         log.info("Shortlist build: {} distinct candidate combo(s) after dedupe; selected {} game-disjoint "
                 + "to price", deduped.size(), selected.size());
 
-        // Phase 5: RFQ-price the selected candidates; keep quotes that actually pay the multiple.
+        // Phase 5: RFQ-price the selected candidates; keep quotes that actually pay the multiple. Legs
+        // that get RFQ-priced but don't qualify are added to rejectedEventTickers too (declared above),
+        // for the same reason: a retry shouldn't re-derive and re-fail on the identical candidates.
         List<PricedComboCandidate> out = new ArrayList<>();
-        // Event tickers of every leg in a candidate that was actually RFQ-priced but did NOT qualify —
-        // returned so a RETRYING caller (see AutoComboBettingScheduler) can exclude them on the next
-        // attempt. Without this, a retry re-derives the exact same top-priority candidates from the
-        // same same-day favorite pool and just re-fails on the same ones — production data showed 5
-        // consecutive retries selecting/pricing the IDENTICAL 4 candidates every time. Excluding
-        // already-rejected legs forces subsequent attempts to reach genuinely different candidates
-        // deeper in the (usually much larger) favorite pool.
-        Set<String> rejectedEventTickers = new HashSet<>();
         // Compact per-rejection detail so "0 qualified" is diagnosable straight from the Discord
         // report — not quoted at all, vs. quoted but the REAL price landed worse than the pre-priced
         // product-of-legs estimate — without another round of pulling EC2 logs.
