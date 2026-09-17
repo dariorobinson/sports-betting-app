@@ -119,6 +119,35 @@ public class ComboService {
     /** Month abbreviations as they appear in Kalshi event tickers (e.g. the SEP in "...-26SEP15..."). */
     private static final List<String> MONTH_ABBREVS =
             List.of("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC");
+    /** League/series root prefixes the shortlist builder may use as legs — user-specified: major US
+     *  sports plus top global tennis/soccer/golf tours, explicitly excluding lower-tier and regional
+     *  leagues (Liga MX, Brasileirão, DIMAYOR, KBO, NPB, LNBP, EFL Championship, CPL, ITF, ATP/WTA
+     *  Challenger tour, esports, cricket, club friendlies, etc.) the user doesn't follow closely enough
+     *  to want exposure to, even if they're technically liquid enough to price. A ticker is allowed if
+     *  it STARTS WITH one of these roots — e.g. "KXNFLSPREAD"/"KXNFL1HTOTAL" match the "KXNFL" root, but
+     *  "KXATPCHALLENGERMATCH" does NOT match the "KXATPMATCH" root (deliberately: main tour only, not
+     *  Challenger). Verified against Kalshi's real series list, not guessed. */
+    private static final Set<String> LEAGUE_ALLOWLIST = Set.of(
+            "KXNFL", "KXNCAAF",                                            // NFL, college football
+            "KXNBA", "KXWNBA",                                             // NBA, WNBA
+            "KXMLB",                                                       // MLB
+            "KXNHL",                                                       // NHL
+            "KXUFC",                                                       // UFC
+            "KXPGA",                                                       // PGA Tour golf
+            "KXNASCAR", "KXF1RACE",                                        // NASCAR, Formula 1
+            "KXBOXING",                                                    // Boxing
+            "KXATPMATCH", "KXWTAMATCH",                                    // ATP/WTA MAIN TOUR only
+            "KXEPL", "KXLALIGA", "KXBUNDESLIGA", "KXSERIEA", "KXLIGUE1",   // top European soccer
+            "KXMLS");                                                      // MLS
+
+    /** True if a series ticker matches one of the {@link #LEAGUE_ALLOWLIST} roots. */
+    private static boolean isAllowedLeague(String seriesTicker) {
+        if (seriesTicker == null) {
+            return false;
+        }
+        String upper = seriesTicker.toUpperCase(java.util.Locale.ROOT);
+        return LEAGUE_ALLOWLIST.stream().anyMatch(upper::startsWith);
+    }
 
     private final KalshiApiClient client;
     private final ActiveComboLegTracker activeComboLegTracker;
@@ -536,11 +565,14 @@ public class ComboService {
                 .collect(Collectors.toSet());
     }
 
-    /** Resolves a collection's legs across ALL sports market types (moneyline, spread, total, player &
-     *  game props) — anything filed under Kalshi's Sports category — while excluding non-sports series
-     *  (crypto, indices). Series are prioritized tennis → other moneyline (GAME/MATCH) → props, so the
-     *  broadest, strongest-favorite markets are resolved first within the series budget. If the
-     *  collection is small enough to resolve whole, its legs are filtered to sports series directly. */
+    /** Resolves a collection's legs across ALLOWED sports market types (moneyline, spread, total,
+     *  player & game props) for leagues in {@link #LEAGUE_ALLOWLIST} — a curated major-leagues-only
+     *  list, not just "anything filed under Kalshi's Sports category" (that includes lower-tier/
+     *  regional leagues the user explicitly doesn't want exposure to). {@code sportsSeries} is kept as
+     *  a defense-in-depth sanity check (never allow a series Kalshi itself doesn't file as Sports),
+     *  not the primary filter. Series are prioritized tennis → other moneyline (GAME/MATCH) → props,
+     *  so the broadest, strongest-favorite markets are resolved first within the series budget. If the
+     *  collection is small enough to resolve whole, its legs are filtered directly. */
     private List<ComboLegEvent> resolveLegsForShortlist(String collectionTicker, Set<String> sportsSeries) {
         ComboLegsResponse resp;
         try {
@@ -557,6 +589,7 @@ public class ComboService {
         } else {
             List<String> series = resp.legCountsBySeries().keySet().stream()
                     .filter(sportsSeries::contains)
+                    .filter(ComboService::isAllowedLeague)
                     .sorted(Comparator.comparingInt(ComboService::seriesPriority))
                     .limit(SHORTLIST_MAX_SERIES_PER_COLLECTION)
                     .toList();
@@ -574,9 +607,10 @@ public class ComboService {
             }
             resolved = all;
         }
-        // Keep only sports events (covers the small-collection path, which isn't series-filtered).
+        // Keep only allowed-league events (covers the small-collection path, which isn't series-filtered).
         return resolved.stream()
                 .filter(l -> sportsSeries.contains(leadingSeriesTicker(l.eventTicker())))
+                .filter(l -> isAllowedLeague(leadingSeriesTicker(l.eventTicker())))
                 .toList();
     }
 
