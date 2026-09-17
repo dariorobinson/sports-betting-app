@@ -24,19 +24,16 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -363,10 +360,11 @@ public class ComboService {
                 collections.size(), minLegProbPercent, minPayoutMultiple.toPlainString(),
                 maxCombo.toPlainString(), maxLegs, pricingBudget, today, excludeGameKeys.size());
 
-        // Phase 1: gather qualifying candidate leg-sets across all collections. Favorites are one per
-        // GAME, played TODAY, not already committed — across any sports market type (moneyline, spread,
-        // total, player/game props), whichever is the strongest qualifying favorite for that game.
-        List<CandidateLegSet> candidates = new ArrayList<>();
+        // Phase 1: gather this cycle's favorites, one per GAME, played TODAY, not already committed —
+        // across any sports market type (moneyline, spread, total, player/game props), whichever is the
+        // strongest qualifying favorite for that game. Kept per collection (not flattened yet) because
+        // the escalation below regenerates leg-sets per collection at each leg-count tier.
+        Map<String, List<FavoriteLeg>> favoritesByCollection = new LinkedHashMap<>();
         int favoritesFound = 0;
         // Every distinct favorite found today, deduped by game (the same game can appear in multiple
         // collections) — kept and returned even if no COMBO ever forms from them, so a "0 candidates"
@@ -377,130 +375,149 @@ public class ComboService {
                     collection.collectionTicker(), minLeg, sportsSeries, today, excludeGameKeys);
             favoritesFound += favorites.size();
             favorites.forEach(f -> favoritesByGame.putIfAbsent(gameKey(f.eventTicker()), f));
-            for (List<FavoriteLeg> legSet :
-                    candidateLegSets(favorites, SHORTLIST_MIN_COMBO_PROBABILITY, candidateCeiling, maxLegs)) {
-                candidates.add(new CandidateLegSet(collection.collectionTicker(), legSet, legSetProduct(legSet)));
-            }
+            favoritesByCollection.put(collection.collectionTicker(), favorites);
         }
         List<String> availableFavorites = favoritesByGame.values().stream()
                 .sorted(Comparator.comparing(FavoriteLeg::prob).reversed())
                 .map(ComboService::describeLeg)
                 .toList();
 
-        // Event tickers a RETRYING caller should exclude on its next attempt — see the field's full
-        // rationale below (Phase 5). Declared here (not just in Phase 5) because a favorites pool that
-        // combines into ZERO candidate leg-sets never reaches pricing at all, yet still needs excluding:
-        // without this, a same-day pool that's simply too thin/too-high-probability to ever combine under
-        // the payout ceiling gets re-derived and re-fails identically on every retry attempt — confirmed
-        // in production (the same single favorite, e.g. "Cal Raleigh: 6+", reported unchanged across all
-        // 6 attempts because nothing was ever excluded). Excluding it forces the next attempt to look at
-        // a genuinely different slice of the market instead of proving the same dead end six times.
+        // Event tickers a RETRYING caller should exclude on its next attempt — either a leg that was
+        // actually RFQ-priced but didn't qualify, or (see below) every favorite found this cycle when NO
+        // leg-count tier ever produced a single qualifying combo. Without this, a same-day pool that's
+        // simply too thin/too-high-probability to ever combine under the payout ceiling gets re-derived
+        // and re-fails identically on every retry attempt — confirmed in production (the same single
+        // favorite, e.g. "Cal Raleigh: 6+", reported unchanged across all 6 attempts).
         Set<String> rejectedEventTickers = new HashSet<>();
-        if (candidates.isEmpty() && !favoritesByGame.isEmpty()) {
-            favoritesByGame.values().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
-        }
+        // Compact per-rejection detail so "0 qualified" is diagnosable straight from the Discord report —
+        // not quoted at all, vs. quoted but the REAL price landed worse than the pre-priced estimate.
+        List<String> rejectionDetails = new ArrayList<>();
+        List<PricedComboCandidate> out = new ArrayList<>();
+        int totalGenerated = 0;
+        int totalDistinct = 0;
+        int totalSelected = 0;
+        int pricingAttemptsMade = 0;
+        int consecutiveFailures = 0;
 
-        // Phase 2: dedupe by GAME-key set (the same combo often appears under several collection
-        // tickers) — keep the highest-probability instance of each distinct set of games.
-        Map<Set<String>, CandidateLegSet> byGames = new LinkedHashMap<>();
-        for (CandidateLegSet c : candidates) {
-            byGames.merge(c.gameKeys(), c, (a, b) -> a.product().compareTo(b.product()) >= 0 ? a : b);
-        }
-        List<CandidateLegSet> deduped = new ArrayList<>(byGames.values());
+        // User-specified escalation: try 2-leg combos first; only move up to 3, then 4 legs if NOTHING at
+        // the smaller size qualified at real RFQ pricing. A 5th leg is only ever attempted when every leg
+        // in that specific combo is individually 80%+ (see STRONG_LEG_FLOOR) — stacking a 5th leg is only
+        // worth the extra correlated risk onto an already-strong set, not just whatever fits the band.
+        escalation:
+        for (int size = 2; size <= Math.min(maxLegs, 5); size++) {
+            boolean requireAllLegsStrong = size == 5;
 
-        // Phase 3: reorder candidates for PRICING PRIORITY (not eligibility — the pool stays broad).
-        // Two considerations, applied in order:
-        // (a) Liquidity tier: production data showed most degenerate ($1.00, no real liquidity) real
-        //     quotes come from Challenger-tour tennis and prop-style markets — market makers frequently
-        //     don't provide a genuine two-sided price for those, regardless of the pre-priced estimate.
-        //     Liquid (mainline moneyline) candidates are tried first, tier by tier.
-        // (b) WITHIN each liquidity tier: balance across leg-counts via round-robin instead of a single
-        //     sort direction — production data showed a plain sort (either direction) let the pricing
-        //     budget get monopolized entirely by one leg-count (first all 2-leg; when reversed, all 4-5
-        //     leg), leaving every other leg-count completely untried. Round-robin guarantees a genuine
-        //     mix survives into the candidates actually selected for pricing below.
-        Map<Long, List<CandidateLegSet>> byLiquidityTier = new TreeMap<>();
-        for (CandidateLegSet c : deduped) {
-            byLiquidityTier.computeIfAbsent(thinLiquidityLegCount(c.legs()), k -> new ArrayList<>()).add(c);
-        }
-        deduped = new ArrayList<>();
-        for (List<CandidateLegSet> tierGroup : byLiquidityTier.values()) {
-            deduped.addAll(roundRobinByGroup(tierGroup, c -> c.legs().size(),
-                    Comparator.comparing(CandidateLegSet::product).reversed(),
-                    Comparator.<Integer>naturalOrder(), tierGroup.size()));
-        }
+            // Phase 2 (this tier): generate this leg-count's candidate leg-sets across all collections.
+            List<CandidateLegSet> tierCandidates = new ArrayList<>();
+            for (Map.Entry<String, List<FavoriteLeg>> e : favoritesByCollection.entrySet()) {
+                for (List<FavoriteLeg> legSet : candidateLegSetsOfSize(
+                        e.getValue(), SHORTLIST_MIN_COMBO_PROBABILITY, candidateCeiling, size, requireAllLegsStrong)) {
+                    tierCandidates.add(new CandidateLegSet(e.getKey(), legSet, legSetProduct(legSet)));
+                }
+            }
+            totalGenerated += tierCandidates.size();
 
-        // Phase 4: greedily select GAME-DISJOINT candidates so no two combos we place this cycle touch
-        // the same underlying game (no correlated/overlapping exposure).
-        List<CandidateLegSet> selected = new ArrayList<>();
-        Set<String> usedGames = new HashSet<>();
-        for (CandidateLegSet c : deduped) {
-            if (selected.size() >= pricingBudget) {
+            // Phase 3 (this tier): dedupe by GAME-key set (the same combo often appears under several
+            // collection tickers) — keep the highest-probability instance of each distinct set of games.
+            // Then reorder for pricing priority: liquid (mainline moneyline) candidates before thin ones
+            // (Challenger tennis, props) — production data showed those rarely get a genuine two-sided
+            // RFQ quote regardless of the pre-priced estimate.
+            Map<Set<String>, CandidateLegSet> byGames = new LinkedHashMap<>();
+            for (CandidateLegSet c : tierCandidates) {
+                byGames.merge(c.gameKeys(), c, (a, b) -> a.product().compareTo(b.product()) >= 0 ? a : b);
+            }
+            List<CandidateLegSet> deduped = new ArrayList<>(byGames.values());
+            deduped.sort(Comparator.comparingLong((CandidateLegSet c) -> thinLiquidityLegCount(c.legs()))
+                    .thenComparing(Comparator.comparing(CandidateLegSet::product).reversed()));
+            totalDistinct += deduped.size();
+
+            // Phase 4 (this tier): greedily select GAME-DISJOINT candidates so no two combos we price
+            // touch the same underlying game (no correlated/overlapping exposure), within whatever
+            // pricing budget this tier hasn't already used up.
+            List<CandidateLegSet> selected = new ArrayList<>();
+            Set<String> usedGames = new HashSet<>();
+            int remainingBudget = pricingBudget - pricingAttemptsMade;
+            if (remainingBudget <= 0) {
                 break;
             }
-            if (Collections.disjoint(usedGames, c.gameKeys())) {
-                selected.add(c);
-                usedGames.addAll(c.gameKeys());
-            }
-        }
-        log.info("Shortlist build: {} distinct candidate combo(s) after dedupe; selected {} game-disjoint "
-                + "to price", deduped.size(), selected.size());
-
-        // Phase 5: RFQ-price the selected candidates; keep quotes that actually pay the multiple. Legs
-        // that get RFQ-priced but don't qualify are added to rejectedEventTickers too (declared above),
-        // for the same reason: a retry shouldn't re-derive and re-fail on the identical candidates.
-        List<PricedComboCandidate> out = new ArrayList<>();
-        // Compact per-rejection detail so "0 qualified" is diagnosable straight from the Discord
-        // report — not quoted at all, vs. quoted but the REAL price landed worse than the pre-priced
-        // product-of-legs estimate — without another round of pulling EC2 logs.
-        List<String> rejectionDetails = new ArrayList<>();
-        int consecutiveFailures = 0;
-        int pricingAttemptsMade = 0;
-        for (CandidateLegSet c : selected) {
-            pricingAttemptsMade++;
-            List<LegSelection> selections = c.legs().stream()
-                    .map(f -> new LegSelection(f.eventTicker(), f.marketTicker(), f.side()))
-                    .toList();
-            ComboPriceResponse priced;
-            try {
-                priced = priceCombo(c.collectionTicker(), selections);
-            } catch (RuntimeException e) {
-                log.warn("Shortlist: pricing candidate {} in {} failed: {}",
-                        selections, c.collectionTicker(), e.getMessage());
-                c.legs().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
-                rejectionDetails.add(describeLegSet(c.legs()) + " — pricing call failed ("
-                        + e.getMessage() + ")");
-                if (++consecutiveFailures >= SHORTLIST_MAX_CONSECUTIVE_FAILURES && out.isEmpty()) {
-                    log.warn("Shortlist: {} consecutive pricing failures and nothing priced yet — stopping",
-                            consecutiveFailures);
+            for (CandidateLegSet c : deduped) {
+                if (selected.size() >= remainingBudget) {
                     break;
                 }
-                continue;
+                if (Collections.disjoint(usedGames, c.gameKeys())) {
+                    selected.add(c);
+                    usedGames.addAll(c.gameKeys());
+                }
             }
-            consecutiveFailures = 0;
-            // Keep only real quotes that actually pay the required multiple (combined ≤ maxCombo) and
-            // aren't an implausibly-cheap outlier (combined ≥ the sanity floor).
-            BigDecimal comboProb = parseDollar(priced.yesAskDollars());
-            boolean qualifies = priced.quoted() && comboProb != null
-                    && comboProb.compareTo(maxCombo) <= 0
-                    && comboProb.compareTo(SHORTLIST_MIN_COMBO_PROBABILITY) >= 0;
-            if (qualifies) {
-                out.add(toCandidate(c.collectionTicker(), c.legs(), priced));
-            } else {
-                c.legs().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
-                // Record exactly why, so a persistent "0 qualified" is diagnosable instead of guessed
-                // at: was it never quoted at all, or quoted but the REAL price came back worse than the
-                // pre-priced product-of-legs estimate (a real market-maker margin/spread the estimate
-                // doesn't account for)?
-                String reason = !priced.quoted() ? "not quoted (no market maker responded)"
-                        : "real price only pays ~" + payoutMultipleFor(comboProb) + "x (needed " + minPayoutMultiple + "x)";
-                rejectionDetails.add(describeLegSet(c.legs()) + " — " + reason);
-                log.info("Shortlist: DID NOT qualify — estimatedProduct={}, quoted={}, realYesAskDollars={}, "
-                                + "realImpliedProb={} (need <= {} and >= {}) — collection={}, games={}",
-                        c.product().toPlainString(), priced.quoted(), priced.yesAskDollars(), comboProb,
-                        maxCombo.toPlainString(), SHORTLIST_MIN_COMBO_PROBABILITY.toPlainString(),
-                        c.collectionTicker(), c.gameKeys());
+            totalSelected += selected.size();
+            log.info("Shortlist build: {}-leg tier — {} candidate(s), {} distinct after dedupe, {} selected "
+                    + "to price", size, tierCandidates.size(), deduped.size(), selected.size());
+
+            // Phase 5 (this tier): RFQ-price the selected candidates; keep quotes that actually pay the
+            // multiple. Legs that get RFQ-priced but don't qualify are excluded on a caller's retry.
+            boolean tierQualifiedAny = false;
+            for (CandidateLegSet c : selected) {
+                pricingAttemptsMade++;
+                List<LegSelection> selections = c.legs().stream()
+                        .map(f -> new LegSelection(f.eventTicker(), f.marketTicker(), f.side()))
+                        .toList();
+                ComboPriceResponse priced;
+                try {
+                    priced = priceCombo(c.collectionTicker(), selections);
+                } catch (RuntimeException e) {
+                    log.warn("Shortlist: pricing candidate {} in {} failed: {}",
+                            selections, c.collectionTicker(), e.getMessage());
+                    c.legs().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
+                    rejectionDetails.add(describeLegSet(c.legs()) + " — pricing call failed ("
+                            + e.getMessage() + ")");
+                    if (++consecutiveFailures >= SHORTLIST_MAX_CONSECUTIVE_FAILURES && out.isEmpty()) {
+                        log.warn("Shortlist: {} consecutive pricing failures and nothing priced yet — stopping",
+                                consecutiveFailures);
+                        break escalation;
+                    }
+                    continue;
+                }
+                consecutiveFailures = 0;
+                // Keep only real quotes that actually pay the required multiple (combined ≤ maxCombo) and
+                // aren't an implausibly-cheap outlier (combined ≥ the sanity floor).
+                BigDecimal comboProb = parseDollar(priced.yesAskDollars());
+                boolean qualifies = priced.quoted() && comboProb != null
+                        && comboProb.compareTo(maxCombo) <= 0
+                        && comboProb.compareTo(SHORTLIST_MIN_COMBO_PROBABILITY) >= 0;
+                if (qualifies) {
+                    out.add(toCandidate(c.collectionTicker(), c.legs(), priced));
+                    tierQualifiedAny = true;
+                } else {
+                    c.legs().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
+                    // Record exactly why, so a persistent "0 qualified" is diagnosable instead of guessed
+                    // at: was it never quoted at all, or quoted but the REAL price came back worse than
+                    // the pre-priced product-of-legs estimate (a real market-maker margin/spread the
+                    // estimate doesn't account for)?
+                    String reason = !priced.quoted() ? "not quoted (no market maker responded)"
+                            : "real price only pays ~" + payoutMultipleFor(comboProb) + "x (needed "
+                                    + minPayoutMultiple + "x)";
+                    rejectionDetails.add(describeLegSet(c.legs()) + " — " + reason);
+                    log.info("Shortlist: DID NOT qualify — estimatedProduct={}, quoted={}, realYesAskDollars={}, "
+                                    + "realImpliedProb={} (need <= {} and >= {}) — collection={}, games={}",
+                            c.product().toPlainString(), priced.quoted(), priced.yesAskDollars(), comboProb,
+                            maxCombo.toPlainString(), SHORTLIST_MIN_COMBO_PROBABILITY.toPlainString(),
+                            c.collectionTicker(), c.gameKeys());
+                }
             }
+
+            // User-specified: only escalate to the next leg-count when NOTHING at this size qualified.
+            // Once a smaller/safer size produces at least one real qualifier, stop — no need for the
+            // extra correlated risk of stacking more legs.
+            if (tierQualifiedAny) {
+                break;
+            }
+        }
+        // A favorites pool that never produced a single generated candidate at ANY tried leg-count
+        // (e.g. only 2-3 favorites this cycle, all too high-probability to combine under the payout
+        // ceiling) never reaches pricing at all — exclude it so a retry looks at a genuinely different
+        // slice of the market instead of re-deriving the same unusable pool.
+        if (totalGenerated == 0 && !favoritesByGame.isEmpty()) {
+            favoritesByGame.values().forEach(f -> rejectedEventTickers.add(f.eventTicker()));
         }
 
         // Present highest-probability-first among the qualifiers — every candidate already pays at
@@ -510,7 +527,7 @@ public class ComboService {
         log.info("Shortlist build: {} priced candidate(s) reached the {}x payout floor after {} pricing "
                 + "attempt(s)", out.size(), minPayoutMultiple.toPlainString(), pricingAttemptsMade);
         ShortlistDiagnostics diagnostics = new ShortlistDiagnostics(collections.size(), excludeGameKeys.size(),
-                favoritesFound, candidates.size(), deduped.size(), selected.size(), pricingAttemptsMade,
+                favoritesFound, totalGenerated, totalDistinct, totalSelected, pricingAttemptsMade,
                 out.size());
         return new ShortlistResult(out, diagnostics, rejectedEventTickers, rejectionDetails, availableFavorites);
     }
@@ -707,6 +724,12 @@ public class ComboService {
      *  the ~0.625 needed for 1.6x. Legs must be strong favorites but not near-certainties: [0.70, 0.90). */
     private static final BigDecimal DEGENERATE_PRICE_CEILING = new BigDecimal("0.90");
 
+    /** A 5-leg combo is only attempted when EVERY leg individually clears this — user-specified: stack
+     *  a 5th leg only when the whole set is genuinely strong (80%+ each), not just whatever happens to
+     *  land in the payout band. 2/3/4-leg combos have no such extra requirement beyond the normal
+     *  {@link #DEGENERATE_PRICE_CEILING} leg band. */
+    private static final BigDecimal STRONG_LEG_FLOOR = new BigDecimal("0.80");
+
     /** The single strongest YES outcome across an event's ACTIVE markets (the favorite), or null if
      *  none clears the leg floor. Skips non-active markets: a finished/settled game still comes back
      *  from the events endpoint with a degenerate ask (e.g. $1.00) and status != "active", and
@@ -733,85 +756,53 @@ public class ComboService {
         return (best != null && best.prob().compareTo(minLeg) >= 0) ? best : null;
     }
 
-    /** All combinations of the given favorites, of size 2..{@code maxLegs}, whose product-of-leg-
+    /** All combinations of the given favorites of EXACTLY {@code size} legs, whose product-of-leg-
      *  probabilities lands in [{@code minCombo}, {@code maxCombo}] — i.e. low enough to pay the required
-     *  multiple, but not implausibly low. Ordered MOST-legs-first, not fewest: with ~16 favorites,
-     *  2-leg combinations alone (C(16,2)=120) vastly outnumber the {@link #SHORTLIST_MAX_LEGSETS} cap,
-     *  so a fewest-first sort meant this cap was filled entirely by 2-leg combos and 3-5 leg combos
-     *  were never even generated past this point — confirmed in production (0/6 real qualifiers, all
-     *  2-leg, across two cycles). Stacking more strong legs is the whole point of allowing up to 5 —
-     *  it gives more margin below the payout ceiling than a 2-leg combo sitting right at the edge.
-     *  Each favorite is from a distinct event, so combinations never double-pick the same game. */
-    private static List<List<FavoriteLeg>> candidateLegSets(List<FavoriteLeg> favs, BigDecimal minCombo,
-                                                            BigDecimal maxCombo, int maxLegs) {
+     *  multiple, but not implausibly low. User-specified escalation: {@code buildPricedCandidateShortlist}
+     *  calls this size-by-size (2, then 3, then 4, then conditionally 5) rather than mixing leg-counts
+     *  together, so the search always tries the smallest/safest combos first and only stacks more legs
+     *  when nothing smaller actually qualified. When {@code requireAllLegsStrong} is set (only for size
+     *  5), a combo is only generated if EVERY leg individually clears {@link #STRONG_LEG_FLOOR} — a 5th
+     *  leg is only worth stacking onto an already-strong set. Each favorite is from a distinct event, so
+     *  combinations never double-pick the same game. Ordered best-probability-first (the most margin
+     *  below the payout ceiling, so more likely to survive real-market spread), capped to
+     *  {@link #SHORTLIST_MAX_LEGSETS}. */
+    private static List<List<FavoriteLeg>> candidateLegSetsOfSize(List<FavoriteLeg> favs, BigDecimal minCombo,
+                                                                   BigDecimal maxCombo, int size,
+                                                                   boolean requireAllLegsStrong) {
         List<List<FavoriteLeg>> sets = new ArrayList<>();
         int n = favs.size();
-        int cap = Math.min(maxLegs, n);
+        if (size > n) {
+            return sets;
+        }
         // Enumerate subsets via bitmask (favs is bounded to SHORTLIST_FAVORITES_PER_COLLECTION, so this
-        // is at most a few hundred masks). Keep those with 2..cap legs whose product is in range.
+        // is at most a few hundred masks). Keep those with exactly `size` legs whose product is in range.
         for (int mask = 1; mask < (1 << n); mask++) {
-            int size = Integer.bitCount(mask);
-            if (size < 2 || size > cap) {
+            if (Integer.bitCount(mask) != size) {
                 continue;
             }
             BigDecimal product = BigDecimal.ONE;
             List<FavoriteLeg> legs = new ArrayList<>(size);
+            boolean allStrong = true;
             for (int i = 0; i < n; i++) {
                 if ((mask & (1 << i)) != 0) {
                     FavoriteLeg f = favs.get(i);
                     legs.add(f);
                     product = product.multiply(f.prob());
+                    if (f.prob().compareTo(STRONG_LEG_FLOOR) < 0) {
+                        allStrong = false;
+                    }
                 }
+            }
+            if (requireAllLegsStrong && !allStrong) {
+                continue;
             }
             if (product.compareTo(minCombo) >= 0 && product.compareTo(maxCombo) <= 0) {
                 sets.add(legs);
             }
         }
-        // Balance across leg-counts rather than sorting globally by size in either direction: a plain
-        // fewest-first (or most-first) sort just replaces one monoculture with another once a hard cap
-        // is applied — confirmed in production both ways (fewest-first: cap filled entirely by 2-leg
-        // combos, 0/6 real qualifiers; most-first: cap filled entirely by 4-5 leg combos, 0 two-leg or
-        // three-leg combos survived at all). Round-robin across leg-count groups (best probability
-        // within each) instead, so the cap holds a genuine MIX of leg-counts whenever the underlying
-        // data supports it.
-        return roundRobinByGroup(sets, List::size,
-                Comparator.comparing(ComboService::legSetProduct).reversed(),
-                Comparator.<Integer>naturalOrder(), SHORTLIST_MAX_LEGSETS);
-    }
-
-    /** Reorders {@code items} by round-robin across the group produced by {@code groupKey}: takes the
-     *  best (per {@code within}) remaining item from each group in turn (groups visited in
-     *  {@code groupOrder}), until {@code limit} items are collected or every group is exhausted. Used
-     *  so a hard downstream cap can't be monopolized by whichever group a single global sort would
-     *  otherwise favor — see call sites for the production evidence that motivated this. */
-    private static <T, K> List<T> roundRobinByGroup(List<T> items, Function<T, K> groupKey,
-                                                     Comparator<T> within, Comparator<K> groupOrder,
-                                                     int limit) {
-        Map<K, List<T>> groups = new TreeMap<>(groupOrder);
-        for (T item : items) {
-            groups.computeIfAbsent(groupKey.apply(item), k -> new ArrayList<>()).add(item);
-        }
-        groups.values().forEach(group -> group.sort(within));
-
-        List<T> result = new ArrayList<>(Math.min(limit, items.size()));
-        Map<K, Integer> nextIndex = new HashMap<>();
-        boolean progress = true;
-        while (result.size() < limit && progress) {
-            progress = false;
-            for (Map.Entry<K, List<T>> entry : groups.entrySet()) {
-                if (result.size() >= limit) {
-                    break;
-                }
-                int i = nextIndex.getOrDefault(entry.getKey(), 0);
-                List<T> group = entry.getValue();
-                if (i < group.size()) {
-                    result.add(group.get(i));
-                    nextIndex.put(entry.getKey(), i + 1);
-                    progress = true;
-                }
-            }
-        }
-        return result;
+        sets.sort(Comparator.comparing(ComboService::legSetProduct).reversed());
+        return sets.size() > SHORTLIST_MAX_LEGSETS ? new ArrayList<>(sets.subList(0, SHORTLIST_MAX_LEGSETS)) : sets;
     }
 
     private static BigDecimal legSetProduct(List<FavoriteLeg> legSet) {
