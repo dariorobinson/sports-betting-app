@@ -47,10 +47,12 @@ public class ValuePlayScheduler {
             new SportTask("Soccer", """
                     Find your best 2-3 VALUE plays in Soccer (top European leagues and MLS — Kalshi series \
                     like KXEPL, KXLALIGA, KXBUNDESLIGA, KXSERIEA, KXLIGUE1, KXMLS) for games over the next \
-                    few days. Consider Moneyline, Spread (goal handicap), and Point Total (goals) markets. \
+                    few days. Focus on Point Total (goals) markets — NOT Moneyline (soccer's draw outcome \
+                    makes moneyline a weaker fit for this kind of stats-driven value search than a clean \
+                    over/under line). Spread (goal handicap) markets are fine too if a clear edge shows up. \
                     Pull recent form (GetTeamRecentFormTool) and head-to-head for both teams — soccer totals \
-                    in particular depend heavily on each team's actual recent scoring/conceding pattern, not \
-                    just their league position."""),
+                    depend heavily on each team's actual recent scoring/conceding pattern, not just their \
+                    league position."""),
             new SportTask("NFL", """
                     Find your best 2-3 VALUE plays in the NFL (Kalshi series like KXNFL and its \
                     Spread/Total/Team Total variants) for games over the next few days (NFL mostly plays \
