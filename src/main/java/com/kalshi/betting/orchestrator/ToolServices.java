@@ -5,9 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.kalshi.betting.service.BettingService;
-import com.kalshi.betting.service.ComboService;
-import com.kalshi.betting.service.PortfolioService;
 import com.kalshi.betting.service.SportsCatalogService;
 import com.kalshi.betting.sportsdata.SportsAnalyticsService;
 import jakarta.validation.Validator;
@@ -37,9 +34,6 @@ public class ToolServices {
             .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
 
     public static SportsCatalogService sportsCatalogService;
-    public static BettingService bettingService;
-    public static PortfolioService portfolioService;
-    public static ComboService comboService;
     public static SportsAnalyticsService sportsAnalyticsService;
     public static Validator validator;
 

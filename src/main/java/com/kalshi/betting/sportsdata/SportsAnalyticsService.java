@@ -2,10 +2,13 @@ package com.kalshi.betting.sportsdata;
 
 import com.kalshi.betting.sportsdata.espn.EspnApiClient;
 import com.kalshi.betting.sportsdata.espn.EspnCoreApiClient;
+import com.kalshi.betting.sportsdata.espn.EspnWebApiClient;
 import com.kalshi.betting.sportsdata.espn.dto.EspnAthlete;
+import com.kalshi.betting.sportsdata.espn.dto.EspnAthleteGameLogResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnCompetitionDetail;
 import com.kalshi.betting.sportsdata.espn.dto.EspnEventLogResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnRankingsResponse;
+import com.kalshi.betting.sportsdata.espn.dto.EspnRosterResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnScheduleResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnScoreboardResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnStandingsResponse;
@@ -13,6 +16,7 @@ import com.kalshi.betting.sportsdata.espn.dto.EspnTeam;
 import com.kalshi.betting.sportsdata.espn.dto.EspnTeamsResponse;
 import org.springframework.stereotype.Service;
 
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,12 +46,19 @@ public class SportsAnalyticsService {
             "pointsfor", "pointsagainst", "pointdifferential", "differential", "points",
             "playoffseed", "rank", "divisionrecord", "home", "road", "lasttengames");
 
+    /** How many of a team's/player's most recent games {@link #getTeamRecentForm}/
+     *  {@link #getPlayerRecentStats} look back through by default. */
+    private static final int DEFAULT_RECENT_GAMES = 10;
+
     private final EspnApiClient espnApiClient;
     private final EspnCoreApiClient espnCoreApiClient;
+    private final EspnWebApiClient espnWebApiClient;
 
-    public SportsAnalyticsService(EspnApiClient espnApiClient, EspnCoreApiClient espnCoreApiClient) {
+    public SportsAnalyticsService(EspnApiClient espnApiClient, EspnCoreApiClient espnCoreApiClient,
+                                   EspnWebApiClient espnWebApiClient) {
         this.espnApiClient = espnApiClient;
         this.espnCoreApiClient = espnCoreApiClient;
+        this.espnWebApiClient = espnWebApiClient;
     }
 
     public TeamStanding getTeamStanding(String sport, String league, String teamName) {
@@ -108,6 +119,100 @@ public class SportsAnalyticsService {
         String oppScore = opp.score() == null ? null : opp.score().displayValue();
         String result = self.winner() == null ? "not played yet" : (self.winner() ? "won" : "lost");
         return Optional.of(new HeadToHeadResult.Matchup(event.date(), selfScore, oppScore, result));
+    }
+
+    /** A team's last {@code lastN} PLAYED games (any opponent), newest first — scoring/result trend
+     *  for totals/spreads reasoning, not just a season-aggregate stat. */
+    public TeamRecentForm getTeamRecentForm(String sport, String league, String teamName, int lastN) {
+        EspnTeam team = findTeam(sport, league, teamName)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No team matching \"" + teamName + "\" found in " + sport + "/" + league));
+
+        EspnScheduleResponse schedule = espnApiClient.getTeamSchedule(sport, league, team.id(), null);
+        List<TeamRecentForm.Game> games = schedule.events().stream()
+                .filter(event -> !event.competitions().isEmpty())
+                .map(event -> toRecentGame(event, team.id()))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .sorted(Comparator.comparing(TeamRecentForm.Game::date).reversed())
+                .limit(lastN > 0 ? lastN : DEFAULT_RECENT_GAMES)
+                .toList();
+
+        return new TeamRecentForm(team.displayName(), games);
+    }
+
+    private static Optional<TeamRecentForm.Game> toRecentGame(EspnScheduleResponse.Event event, String teamId) {
+        List<EspnScheduleResponse.Competitor> competitors = event.competitions().get(0).competitors();
+        if (competitors.size() != 2) {
+            return Optional.empty();
+        }
+        EspnScheduleResponse.Competitor self = null;
+        EspnScheduleResponse.Competitor opp = null;
+        for (EspnScheduleResponse.Competitor c : competitors) {
+            if (teamId.equals(c.team().id())) {
+                self = c;
+            } else {
+                opp = c;
+            }
+        }
+        if (self == null || opp == null || self.score() == null || opp.score() == null) {
+            return Optional.empty(); // not played yet, or malformed
+        }
+        String result = self.winner() == null ? "tie/unknown" : (self.winner() ? "won" : "lost");
+        return Optional.of(new TeamRecentForm.Game(event.date(), opp.team().displayName(),
+                self.score().displayValue(), opp.score().displayValue(), result));
+    }
+
+    /** An NBA (or other team-sport) player's last {@code lastN} PLAYED games' box-score lines,
+     *  newest first — e.g. sport="basketball", league="nba". Resolves the player to a team (via
+     *  standings) and then an athlete id (via that team's roster), since ESPN has no direct
+     *  "search athlete by name" endpoint. */
+    public PlayerRecentStats getPlayerRecentStats(String sport, String league, String teamName,
+                                                    String playerName, int lastN) {
+        EspnTeam team = findTeam(sport, league, teamName)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No team matching \"" + teamName + "\" found in " + sport + "/" + league));
+        EspnRosterResponse roster = espnApiClient.getRoster(sport, league, team.id());
+        EspnAthlete athlete = (roster.athletes() == null ? List.<EspnAthlete>of() : roster.athletes()).stream()
+                .filter(a -> matches(a, playerName))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No player matching \"" + playerName + "\" found on " + team.displayName() + "'s roster"));
+
+        EspnAthleteGameLogResponse log = espnWebApiClient.getAthleteGameLog(sport, league, athlete.id());
+        List<String> labels = log.labels() == null ? List.of() : log.labels();
+        Map<String, EspnAthleteGameLogResponse.GameMeta> eventsById =
+                log.events() == null ? Map.of() : log.events();
+
+        List<PlayerRecentStats.Game> games = (log.seasonTypes() == null ? List.<EspnAthleteGameLogResponse.SeasonType>of()
+                : log.seasonTypes()).stream()
+                .flatMap(st -> st.categories() == null ? List.<EspnAthleteGameLogResponse.SeasonTypeCategory>of().stream()
+                        : st.categories().stream())
+                .flatMap(cat -> cat.events() == null ? List.<EspnAthleteGameLogResponse.GameStatLine>of().stream()
+                        : cat.events().stream())
+                .map(line -> toPlayerGame(line, labels, eventsById))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .sorted(Comparator.comparing(PlayerRecentStats.Game::date).reversed())
+                .limit(lastN > 0 ? lastN : DEFAULT_RECENT_GAMES)
+                .toList();
+
+        return new PlayerRecentStats(athlete.bestDisplayName(), games);
+    }
+
+    private static Optional<PlayerRecentStats.Game> toPlayerGame(
+            EspnAthleteGameLogResponse.GameStatLine line, List<String> labels,
+            Map<String, EspnAthleteGameLogResponse.GameMeta> eventsById) {
+        EspnAthleteGameLogResponse.GameMeta meta = eventsById.get(line.eventId());
+        if (meta == null || line.stats() == null) {
+            return Optional.empty();
+        }
+        Map<String, String> stats = new LinkedHashMap<>();
+        for (int i = 0; i < labels.size() && i < line.stats().size(); i++) {
+            stats.put(labels.get(i), line.stats().get(i));
+        }
+        String opponent = meta.opponent() == null ? "?" : meta.opponent().displayName();
+        return Optional.of(new PlayerRecentStats.Game(meta.gameDate(), opponent, meta.gameResult(), stats));
     }
 
     private Optional<EspnTeam> findTeam(String sport, String league, String teamName) {

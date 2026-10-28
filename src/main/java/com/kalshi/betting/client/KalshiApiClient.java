@@ -12,9 +12,11 @@ import org.springframework.web.client.RestClient;
 import java.net.URI;
 
 /**
- * Thin, typed wrapper around the subset of the Kalshi Trade API (v2) this app needs:
- * sports catalog browsing (series/events/markets), order books, and order/portfolio
- * management. Handles RSA-PSS request signing for authenticated endpoints.
+ * Thin, typed wrapper around the subset of the Kalshi Trade API (v2) this app needs: sports catalog
+ * browsing (series/events/markets), order books, and settlement history (for realized P&L). This app
+ * never places or cancels an order — it's an advisory-only research tool — so only read-only
+ * endpoints are wrapped. Handles RSA-PSS request signing for the authenticated ones (order books and
+ * settlements).
  */
 @Component
 public class KalshiApiClient {
@@ -79,26 +81,7 @@ public class KalshiApiClient {
         return get("/markets/" + ticker + "/orderbook", params, true, GetMarketOrderbookResponse.class);
     }
 
-    // ---- Portfolio (authenticated) ----
-
-    public GetBalanceResponse getBalance() {
-        return get("/portfolio/balance", null, true, GetBalanceResponse.class);
-    }
-
-    public GetPositionsResponse getPositions() {
-        return get("/portfolio/positions", null, true, GetPositionsResponse.class);
-    }
-
-    public GetOrdersResponse getOrders(String status, String ticker) {
-        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
-        if (status != null && !status.isBlank()) {
-            params.add("status", status);
-        }
-        if (ticker != null && !ticker.isBlank()) {
-            params.add("ticker", ticker);
-        }
-        return get("/portfolio/orders", params, true, GetOrdersResponse.class);
-    }
+    // ---- Settlements (authenticated) — realized P&L tracking only, no placement ----
 
     /**
      * One page of settled markets (resolved bets), newest first. {@code minTs} (epoch seconds) bounds
@@ -117,130 +100,12 @@ public class KalshiApiClient {
         return get("/portfolio/settlements", params, true, GetSettlementsResponse.class);
     }
 
-    public CreateOrderV2Response createOrder(CreateOrderV2Request request) {
-        return post("/portfolio/events/orders", request, CreateOrderV2Response.class);
-    }
-
-    public CancelOrderV2Response cancelOrder(String orderId, String marketTicker) {
-        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
-        if (marketTicker != null && !marketTicker.isBlank()) {
-            params.add("market_ticker", marketTicker);
-        }
-        return delete("/portfolio/events/orders/" + orderId, params, CancelOrderV2Response.class);
-    }
-
-    // ---- Combos / multivariate event collections (list+get are public; create is authenticated) ----
-
-    public GetMultivariateEventCollectionsResponse listMultivariateCollections(String seriesTicker, String status) {
-        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
-        if (seriesTicker != null && !seriesTicker.isBlank()) {
-            params.add("series_ticker", seriesTicker);
-        }
-        if (status != null && !status.isBlank()) {
-            params.add("status", status);
-        }
-        return get("/multivariate_event_collections", params, false, GetMultivariateEventCollectionsResponse.class);
-    }
-
-    public GetMultivariateEventCollectionResponse getMultivariateCollection(String collectionTicker) {
-        return get("/multivariate_event_collections/" + collectionTicker, null, false,
-                GetMultivariateEventCollectionResponse.class);
-    }
-
-    /**
-     * Materializes (or returns, if it already exists) an actual tradeable market for one specific
-     * combination of legs — this is the only way to see Kalshi's real combo price, since combos
-     * aren't pre-listed. Doesn't place an order or risk money; it just creates/looks up a listing.
-     */
-    public CreateMarketInMultivariateEventCollectionResponse createComboMarket(
-            String collectionTicker, CreateMarketInMultivariateEventCollectionRequest request) {
-        return post("/multivariate_event_collections/" + collectionTicker, request,
-                CreateMarketInMultivariateEventCollectionResponse.class);
-    }
-
-    // ---- RFQs / quotes (authenticated) — combo markets have no resting order book; a real price
-    // requires asking a market maker for a quote via this request-for-quote flow. ----
-
-    public CreateRFQResponse createRfq(CreateRFQRequest request) {
-        return post("/communications/rfqs", request, CreateRFQResponse.class);
-    }
-
-    public GetQuotesResponse getQuotesForRfq(String rfqId) {
-        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
-        params.add("rfq_id", rfqId);
-        // Kalshi requires an explicit scope filter on this endpoint (403 otherwise) — we're the RFQ
-        // creator asking for quotes responding to our own RFQ, so "self" scoped to the RFQ creator.
-        params.add("rfq_user_filter", "self");
-        return get("/communications/quotes", params, true, GetQuotesResponse.class);
-    }
-
-    public void deleteRfq(String rfqId) {
-        delete("/communications/rfqs/" + rfqId, null, Void.class);
-    }
-
-    /** Accepts a market maker's quote — "yes" or "no" (which side of the combo market you're
-     *  buying). Requires the quoter to then confirm before anything executes. */
-    public void acceptQuote(String rfqId, String quoteId, String acceptedSide) {
-        put("/communications/rfqs/" + rfqId + "/quotes/" + quoteId + "/accept",
-                new AcceptQuoteRequest(acceptedSide), Void.class);
-    }
-
-    /** Confirms an already-accepted quote — starts execution. */
-    public void confirmQuote(String rfqId, String quoteId) {
-        put("/communications/rfqs/" + rfqId + "/quotes/" + quoteId + "/confirm", java.util.Map.of(), Void.class);
-    }
-
-    /** Fetches a quote's current status — used to verify a confirmed quote actually executed
-     *  rather than trusting confirm's 204 response alone (confirming only "starts a timer for
-     *  order execution," it doesn't mean the trade is filled yet). */
-    public GetQuoteResponse getQuote(String rfqId, String quoteId) {
-        return get("/communications/rfqs/" + rfqId + "/quotes/" + quoteId, null, true, GetQuoteResponse.class);
-    }
-
     // ---- HTTP plumbing ----
 
     private <T> T get(String path, MultiValueMap<String, String> queryParams, boolean authenticated,
                        Class<T> responseType) {
         KalshiRequestSigner.SignedHeaders signed = authenticated ? signer.sign("GET", basePath + path) : null;
         return restClient.get()
-                .uri(uriBuilder -> {
-                    uriBuilder.path(path);
-                    if (queryParams != null && !queryParams.isEmpty()) {
-                        uriBuilder.queryParams(queryParams);
-                    }
-                    return uriBuilder.build();
-                })
-                .headers(headers -> applyAuth(headers, signed))
-                .retrieve()
-                .onStatus(status -> status.value() >= 400, this::raiseApiException)
-                .body(responseType);
-    }
-
-    private <T> T post(String path, Object body, Class<T> responseType) {
-        KalshiRequestSigner.SignedHeaders signed = signer.sign("POST", basePath + path);
-        return restClient.post()
-                .uri(path)
-                .headers(headers -> applyAuth(headers, signed))
-                .body(body)
-                .retrieve()
-                .onStatus(status -> status.value() >= 400, this::raiseApiException)
-                .body(responseType);
-    }
-
-    private <T> T put(String path, Object body, Class<T> responseType) {
-        KalshiRequestSigner.SignedHeaders signed = signer.sign("PUT", basePath + path);
-        return restClient.put()
-                .uri(path)
-                .headers(headers -> applyAuth(headers, signed))
-                .body(body)
-                .retrieve()
-                .onStatus(status -> status.value() >= 400, this::raiseApiException)
-                .body(responseType);
-    }
-
-    private <T> T delete(String path, MultiValueMap<String, String> queryParams, Class<T> responseType) {
-        KalshiRequestSigner.SignedHeaders signed = signer.sign("DELETE", basePath + path);
-        return restClient.delete()
                 .uri(uriBuilder -> {
                     uriBuilder.path(path);
                     if (queryParams != null && !queryParams.isEmpty()) {

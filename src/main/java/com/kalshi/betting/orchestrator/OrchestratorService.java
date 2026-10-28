@@ -11,11 +11,9 @@ import com.anthropic.models.beta.messages.BetaThinkingConfigDisabled;
 import com.anthropic.models.beta.messages.BetaToolResultBlockParam;
 import com.anthropic.models.beta.messages.BetaToolUseBlock;
 import com.anthropic.models.beta.messages.BetaUsage;
+import com.anthropic.models.beta.messages.BetaWebSearchTool20260209;
 import com.anthropic.models.beta.messages.MessageCreateParams;
 import com.kalshi.betting.orchestrator.tool.*;
-import com.kalshi.betting.service.BettingService;
-import com.kalshi.betting.service.ComboService;
-import com.kalshi.betting.service.PortfolioService;
 import com.kalshi.betting.service.SportsCatalogService;
 import com.kalshi.betting.sportsdata.SportsAnalyticsService;
 import jakarta.validation.Validator;
@@ -83,29 +81,15 @@ public class OrchestratorService {
             ListGamesTool.class,
             GetGameTool.class,
             GetMarketOrderbookTool.class,
-            GetBalanceTool.class,
-            GetPositionsTool.class,
-            ListMyOrdersTool.class,
-            ListSportsCombosTool.class,
-            GetComboLegsTool.class,
-            PlaceBetTool.class,
-            CancelBetTool.class,
-            PriceComboTool.class,
-            PlaceComboBetTool.class,
-            GetTeamAnalyticsTool.class,
-            GetIndividualAnalyticsTool.class);
-
-    /** Reduced tool set for the autonomous combo-betting scheduler. The scheduler now pre-computes a
-     *  priced candidate shortlist and current positions in Java and injects them into the prompt
-     *  (see {@code AutoComboBettingScheduler}), so the model no longer surveys or prices from scratch
-     *  — it only researches legs, selects, and places. Shipping ~4 tool schemas instead of 15 shrinks
-     *  the cached prefix read on every loop iteration. PriceComboTool stays only as a fallback for the
-     *  model to sanity-check an alternative combination; PlaceComboBetTool actually places. */
-    public static final List<Class<?>> SCHEDULER_TOOL_CLASSES = List.of(
             GetTeamAnalyticsTool.class,
             GetIndividualAnalyticsTool.class,
-            PriceComboTool.class,
-            PlaceComboBetTool.class);
+            GetTeamRecentFormTool.class,
+            GetPlayerRecentStatsTool.class);
+
+    /** Tool set for the daily value-play scheduler — identical to {@link #TOOL_CLASSES} today, kept as
+     *  its own named constant since the two callers (interactive Discord chat vs. the scheduled report)
+     *  are conceptually independent and have diverged before (see git history) and may again. */
+    public static final List<Class<?>> VALUE_PLAY_TOOL_CLASSES = TOOL_CLASSES;
 
     private final AnthropicClient client;
     private final String systemPromptTemplate;
@@ -127,16 +111,10 @@ public class OrchestratorService {
 
     public OrchestratorService(AnthropicClient client,
                                 SportsCatalogService sportsCatalogService,
-                                BettingService bettingService,
-                                PortfolioService portfolioService,
-                                ComboService comboService,
                                 SportsAnalyticsService sportsAnalyticsService,
                                 Validator validator) {
         this.client = client;
         ToolServices.sportsCatalogService = sportsCatalogService;
-        ToolServices.bettingService = bettingService;
-        ToolServices.portfolioService = portfolioService;
-        ToolServices.comboService = comboService;
         ToolServices.sportsAnalyticsService = sportsAnalyticsService;
         ToolServices.validator = validator;
         this.systemPromptTemplate = loadInstructions();
@@ -252,6 +230,12 @@ public class OrchestratorService {
             boolean isLastTool = i == toolClasses.size() - 1;
             builder.addTool(NonStrictTools.from(toolClasses.get(i), isLastTool));
         }
+        // Server-side web search — lets the model pull real, current numbers from ESPN or anywhere
+        // else on the web (injury news, a stat the structured tools above don't expose) instead of
+        // relying only on this app's own curated ESPN endpoints. Anthropic executes the search and
+        // feeds the result back to the model server-side (no tool_use/tool_result round trip through
+        // this app's loop is needed). maxUses caps the cost of a single turn going search-happy.
+        builder.addTool(BetaWebSearchTool20260209.builder().maxUses(5).build());
         return builder;
     }
 

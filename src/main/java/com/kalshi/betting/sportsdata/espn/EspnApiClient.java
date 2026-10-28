@@ -1,6 +1,7 @@
 package com.kalshi.betting.sportsdata.espn;
 
 import com.kalshi.betting.sportsdata.espn.dto.EspnRankingsResponse;
+import com.kalshi.betting.sportsdata.espn.dto.EspnRosterResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnScheduleResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnScoreboardResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnStandingsResponse;
@@ -67,5 +68,15 @@ public class EspnApiClient {
                 .uri("/apis/site/v2/sports/{sport}/{league}/scoreboard", sport, league)
                 .retrieve()
                 .body(EspnScoreboardResponse.class);
+    }
+
+    /** A team's full roster (every rostered athlete, with id) — used to resolve a player name to the
+     *  athlete id {@link EspnWebApiClient#getAthleteGameLog} needs, since there's no direct
+     *  "search athlete by name" endpoint. */
+    public EspnRosterResponse getRoster(String sport, String league, String teamId) {
+        return espnRestClient.get()
+                .uri("/apis/site/v2/sports/{sport}/{league}/teams/{teamId}/roster", sport, league, teamId)
+                .retrieve()
+                .body(EspnRosterResponse.class);
     }
 }

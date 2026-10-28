@@ -1,30 +1,33 @@
-# Kalshi Sports Betting
+# Kalshi Sports Value-Play Research Assistant
 
-A Spring Boot app for browsing Kalshi sports event markets and placing bets, built against
-Kalshi's Trade API v2 (`openapi.yaml` in this repo, downloaded from https://docs.kalshi.com/openapi.yaml).
-
-It does **not** use the AsyncAPI (WebSocket) spec — everything here is REST/polling. If you
-later want live order-book/ticker streaming, that's the natural next addition (see
-`asyncapi.yaml`).
-
-⚠️ **This places real orders with real money on the configured Kalshi environment.** Point it at
-the demo environment first (see below) until you're confident in it.
+A Spring Boot app that researches sports betting value on Kalshi and reports it — it does **not**
+place, cancel, or modify any bet. It compares real statistics (ESPN + web search) against Kalshi's
+live market prices to find plays where the data suggests a meaningfully better true probability than
+Kalshi's price implies, across College Football, Soccer, NFL, and NBA (player props). Built against
+Kalshi's Trade API v2 (`openapi.yaml` in this repo) for **market data only** — browsing series,
+events, markets, and order books, all public/read-only endpoints.
 
 Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
 
 ## How it works
 
-- **Auth**: Kalshi requires every private-endpoint request to carry three headers —
-  `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-TIMESTAMP`, `KALSHI-ACCESS-SIGNATURE` — where the signature
-  is an RSA-PSS (SHA-256) signature over `timestamp + HTTP_METHOD + request_path`, signed with
-  your API key's private key. That's implemented in
-  [`KalshiRequestSigner`](src/main/java/com/kalshi/betting/auth/KalshiRequestSigner.java).
-- **Betting semantics**: Kalshi's order API is expressed in terms of the YES leg only
-  (`bid` = buy YES, `ask` = sell YES / buy NO, at a YES-denominated price). This app lets you
-  think in plain "buy YES" / "buy NO" terms instead; the translation lives in
-  [`BettingService`](src/main/java/com/kalshi/betting/service/BettingService.java).
+- Every morning (9am America/Chicago by default), [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
+  runs four independent research tasks — one per sport (CFB, Soccer, NFL, NBA player props) — each
+  letting Claude browse Kalshi's live markets, pull real stats from ESPN
+  ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the web, and write up 2-3
+  value plays with the stats behind them. The combined report is DMed to one pre-authorized Discord
+  user. Nothing is ever placed — see [`docs/instructions.md`](src/main/resources/docs/instructions.md)
+  for the exact methodology/format the model follows.
+- You can also just DM the bot directly any time ("find me some value plays in the NBA tonight",
+  "what's Kalshi pricing the Chiefs game at") via the same Discord bot (see below).
+- **Auth**: Kalshi requires every private-endpoint request (order books, settlement history) to
+  carry three headers — `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-TIMESTAMP`, `KALSHI-ACCESS-SIGNATURE` —
+  where the signature is an RSA-PSS (SHA-256) signature over `timestamp + HTTP_METHOD + request_path`,
+  signed with your API key's private key. That's implemented in
+  [`KalshiRequestSigner`](src/main/java/com/kalshi/betting/auth/KalshiRequestSigner.java). Market
+  browsing itself (series/events/markets) is public and needs no credentials at all.
 
-## 1. Get Kalshi API credentials
+## 1. Get Kalshi API credentials (optional, but needed for order books and P&L tracking)
 
 1. Create a Kalshi account (production: https://kalshi.com, demo: https://demo.kalshi.co).
 2. In account settings, generate an API key. Kalshi will show you an **API Key ID** and have you
@@ -50,8 +53,8 @@ export KALSHI_BASE_URL="https://demo-api.kalshi.co/trade-api/v2"
 # export KALSHI_BASE_URL="https://api.elections.kalshi.com/trade-api/v2"
 ```
 
-Browsing markets works even without credentials configured (those endpoints are public); placing
-bets, checking your balance/positions, and viewing order books all require them.
+Browsing markets (series/events/games) works even without credentials configured — those endpoints
+are public. Order books and settlement/P&L history require them.
 
 ### Other environment variables
 
@@ -71,8 +74,8 @@ configured with — useful right after a deploy.
 ./mvnw spring-boot:run
 ```
 
-Then open http://localhost:8080 for a minimal browser UI to browse sports, view games/markets,
-and place bets. Or use the REST API directly:
+Then open http://localhost:8080 for a minimal browser UI to browse sports and games. Or use the
+REST API directly:
 
 ```bash
 # Browse
@@ -81,87 +84,28 @@ curl localhost:8080/api/sports/KXNFLGAME/games
 curl localhost:8080/api/sports/games/KXNFLGAME-25JAN01DALPHI
 curl "localhost:8080/api/sports/markets/KXNFLGAME-25JAN01DALPHI-DAL/orderbook"
 
-# Portfolio (requires credentials)
-curl localhost:8080/api/portfolio/balance
-curl localhost:8080/api/portfolio/positions
+# Realized P&L from Kalshi's own settlement history (today/week/month)
+curl localhost:8080/api/pnl
 
-# Place a bet: buy 5 contracts of YES at 55 cents
-curl -X POST localhost:8080/api/bets \
-  -H "Content-Type: application/json" \
-  -d '{"ticker":"KXNFLGAME-25JAN01DALPHI-DAL","outcome":"YES","action":"BUY","price":0.55,"count":5}'
-
-# List your orders / cancel one
-curl localhost:8080/api/bets
-curl -X DELETE localhost:8080/api/bets/{orderId}
+# Manually trigger the daily value-play research + Discord report on demand
+curl -X POST localhost:8080/api/scheduler/value-plays/run
 ```
-
-### Placing a bet
-
-`POST /api/bets`:
-
-| Field         | Type   | Notes                                                             |
-|---------------|--------|--------------------------------------------------------------------|
-| `ticker`      | string | Market ticker (from `/api/sports/games/{eventTicker}`)             |
-| `outcome`     | string | `"YES"` or `"NO"` — which side you're betting on                  |
-| `action`      | string | `"BUY"` (default) to open a position, `"SELL"` to close/reduce one |
-| `price`       | number | Price of that outcome in dollars, e.g. `0.55` for 55¢              |
-| `count`       | int    | Number of contracts                                                 |
-| `timeInForce` | string | `good_till_canceled` (default), `immediate_or_cancel`, `fill_or_kill` |
-
-### Browsing and pricing combos ("parlays")
-
-Kalshi calls these **multivariate event collections** — a collection defines a slate of eligible
-legs (games/props) plus a min/max leg count; you don't get a price until you tell Kalshi exactly
-which legs+sides you want, which materializes (or looks up) a real market for that combination.
-
-```bash
-# List open combo collections that include at least one sports leg
-curl localhost:8080/api/combos
-
-# See what legs are available. Collections can have hundreds of legs across many series/sports —
-# if there are too many to show at once, this returns a per-series leg count instead of a dump;
-# pass ?seriesTicker=<one of those> to drill into a manageable subset with live prices.
-curl "localhost:8080/api/combos/{collectionTicker}/legs"
-curl "localhost:8080/api/combos/{collectionTicker}/legs?seriesTicker=KXNBASUMMERGAME"
-
-# Materialize the real Kalshi price for a specific set of legs. This creates/looks up a listing —
-# it does NOT place an order or risk money — but does count against Kalshi's 5,000/week
-# collection-market-creation limit.
-curl -X POST "localhost:8080/api/combos/{collectionTicker}/price" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "legs": [
-      {"event_ticker": "KXNBASUMMERGAME-...", "market_ticker": "KXNBASUMMERGAME-...-DEN", "side": "YES"},
-      {"event_ticker": "KXNBASUMMERGAME-...", "market_ticker": "KXNBASUMMERGAME-...-GSW", "side": "YES"}
-    ]
-  }'
-```
-
-This app deliberately doesn't estimate win probability or rank candidate combos itself — that
-needs external stats/judgment (see the `sports-stats-analyst` agent in `.claude/agents/`), which
-isn't something this Java app can invoke on its own. The workflow is: an agent pulls legs from
-here, estimates each leg's probability, picks promising combinations, and calls the `/price`
-endpoint to see Kalshi's actual price for the ones worth surfacing.
 
 ## Discord bot
 
 This app runs its own Discord bot in-process — no external CLI/agent session required. It uses
-**JDA** to connect to Discord's gateway directly and the **Anthropic Java SDK**'s `BetaToolRunner`
-to run an agentic tool-calling loop over the same `service/` layer the REST API uses. Modeled
-directly on a proven pattern from another project (`assistant-app`), specifically *because* an
-earlier attempt at wiring this through Claude Code's own `--channels`/MCP feature ran into
-permission-prompt friction that isn't a good fit for an always-on, unattended bot.
+**JDA** to connect to Discord's gateway directly and the **Anthropic Java SDK** to run an agentic
+tool-calling loop over the `sportsdata`/`SportsCatalogService` layer, plus Anthropic's server-side
+web search tool for anything ESPN's structured data doesn't cover.
 
 - **Access control**: only DMs from one pre-authorized Discord user ID are acted on — everyone
   else, and all server/channel messages, are silently ignored. See
   [`DiscordListener`](src/main/java/com/kalshi/betting/discord/DiscordListener.java).
-- **No confirmation step**: unlike the REST API (which just executes whatever you tell it to),
-  there's also no confirmation step here — if the model decides to call `PlaceBetTool`, it
-  executes immediately. The system prompt ([`instructions.md`](src/main/resources/docs/instructions.md))
-  tells the model to ask clarifying questions rather than guess at bet details, but that's a
-  prompting instruction, not an enforced technical gate.
+- **Read-only, advisory only**: there is no tool anywhere in this app that places, cancels, or
+  modifies a Kalshi order. The model can only browse markets, pull ESPN stats, and search the web.
 - **Per-user conversation history** is kept in memory only (`OrchestratorService`) — it resets on
-  restart.
+  restart. The scheduled daily report runs stateless (no memory of past reports), by design — see
+  the javadoc on `OrchestratorService.chatOnce`.
 
 ### Setup
 
@@ -176,25 +120,26 @@ exactly as before with no Discord dependency at all (check the startup log for a
 either way, no silent failure).
 
 Tool classes live in `orchestrator/tool/` — each is a thin adapter (`Supplier<String>` + Jackson
-annotations for the model-facing schema) over one `service/` method, mirroring the same set of
-capabilities previously exposed as MCP tools: `ListSportsTool`, `ListGamesTool`, `GetGameTool`,
-`GetMarketOrderbookTool`, `GetBalanceTool`, `GetPositionsTool`, `ListMyOrdersTool`,
-`ListSportsCombosTool`, `GetComboLegsTool`, `PlaceBetTool`, `CancelBetTool`, `PriceComboTool`.
+annotations for the model-facing schema) over one service method: `ListSportsTool`, `ListGamesTool`,
+`GetGameTool`, `GetMarketOrderbookTool` (Kalshi market data), `GetTeamAnalyticsTool`,
+`GetIndividualAnalyticsTool`, `GetTeamRecentFormTool`, `GetPlayerRecentStatsTool` (ESPN stats).
 
 Dependency versions (`com.anthropic:anthropic-java:2.17.0`, `net.dv8tion:JDA:5.3.0`) are matched
-to `assistant-app`'s proven-working combination rather than latest — JDA in particular has a
-major version line (6.x) with unverified compatibility here.
+to a proven-working combination rather than latest — JDA in particular has a major version line
+(6.x) with unverified compatibility here.
 
 ## Project layout
 
 ```
 config/        Kalshi connection properties, RestClient bean, API key filter, Anthropic client bean
 auth/          RSA-PSS request signing
-client/        Low-level typed Kalshi API client + DTOs mirroring openapi.yaml
-service/       Sports catalog browsing, bet placement/translation, portfolio, combo pricing
+client/        Low-level typed Kalshi API client (read-only market data + settlements) + DTOs
+service/       Sports catalog browsing (series -> events -> markets), P&L tracking
+sportsdata/    ESPN-backed team/player analytics (standings, head-to-head, recent form, box scores)
 web/           This app's own REST API + DTOs
 discord/       JDA-based Discord bot (gateway connection, DM/allowlist gate)
-orchestrator/  Anthropic tool-calling loop + tool classes wrapping the service/ layer
+scheduler/     Daily value-play report (research + Discord DM), P&L summaries
+orchestrator/  Anthropic tool-calling loop + tool classes wrapping the sportsdata/service layers
 ```
 
 Note on Spring Boot 4.1.0: it split `RestClient`/`RestClientAutoConfiguration` out of
@@ -206,10 +151,11 @@ Kalshi) won't exist. Also, its auto-configured `ObjectMapper` is the newer Jacks
 
 ## Notes / limitations
 
-- Covers sports market discovery (series → events/games → markets), order books, placing/
-  cancelling limit orders (Kalshi's V2 order endpoint), balance, positions, and browsing/pricing
-  combo (multivariate event) markets — exposed both as a REST API and via the Discord bot's tool
-  set — not the full Kalshi API surface (RFQs, subaccounts, FCM, block trades, etc.).
-- Uses the V2 order endpoints (`/portfolio/events/orders`) since the legacy `/portfolio/orders`
-  endpoints are being phased out per Kalshi's own spec.
-- No persistence/database — it's a thin, stateless pass-through to Kalshi.
+- Covers sports market discovery (series → events/games → markets) and order books, plus realized
+  P&L from settlement history — exposed both as a REST API and via the Discord bot's tool set — not
+  the full Kalshi API surface. There is deliberately no order-placement, combo/RFQ, or
+  portfolio-balance capability anywhere in this app anymore.
+- `tools/mispricing_pipeline.py` is a separate, standalone local script (Python stdlib only) that
+  compares `sports-stats-analyst` subagent estimates against live Kalshi prices — unrelated to the
+  Discord bot's own research flow, see [`tools/README.md`](tools/README.md).
+- No persistence/database — it's a thin, stateless pass-through to Kalshi and ESPN.

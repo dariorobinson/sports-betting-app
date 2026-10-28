@@ -32,4 +32,15 @@ public class EspnClientConfig {
                 .defaultHeader("Accept", "application/json")
                 .build();
     }
+
+    /** ESPN's "web" API — a third host (backs espn.com's own web app), used for per-athlete game logs
+     *  (box-score lines per recent game), which neither the "site" nor "core" API exposes. Same
+     *  undocumented-hidden-API caveat as the other two hosts. */
+    @Bean
+    public RestClient espnWebRestClient() {
+        return RestClient.builder()
+                .baseUrl("https://site.web.api.espn.com")
+                .defaultHeader("Accept", "application/json")
+                .build();
+    }
 }
