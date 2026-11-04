@@ -23,8 +23,8 @@ public class GetTeamAnalyticsTool implements Supplier<String> {
     public String sport;
 
     @JsonPropertyDescription("ESPN league slug within that sport, e.g. 'nba', 'wnba', 'nfl', "
-            + "'college-football', 'mlb', 'nhl'. For soccer this is a competition code like "
-            + "'eng.1' (Premier League) or 'usa.1' (MLS).")
+            + "'college-football', 'mens-college-basketball', 'mlb', 'nhl'. For soccer this is a "
+            + "competition code like 'eng.1' (Premier League) or 'usa.1' (MLS).")
     public String league;
 
     @JsonPropertyDescription("Team name — partial names work, e.g. 'Lakers' matches 'Los Angeles Lakers'")

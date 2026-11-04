@@ -3,20 +3,21 @@
 A Spring Boot app that researches sports betting value on Kalshi and reports it — it does **not**
 place, cancel, or modify any bet. It compares real statistics (ESPN + web search) against Kalshi's
 live market prices to find plays where the data suggests a meaningfully better true probability than
-Kalshi's price implies, across College Football, Soccer, NFL, and NBA (player props). Built against
-Kalshi's Trade API v2 (`openapi.yaml` in this repo) for **market data only** — browsing series,
-events, markets, and order books, all public/read-only endpoints.
+Kalshi's price implies, across College Football, Soccer, NFL, NBA (player props), and NCAA Men's
+Basketball. Built against Kalshi's Trade API v2 (`openapi.yaml` in this repo) for **market data
+only** — browsing series, events, markets, and order books, all public/read-only endpoints.
 
 Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
 
 ## How it works
 
 - Every morning (9am America/Chicago by default), [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
-  runs four independent research tasks — one per sport (CFB, Soccer, NFL, NBA player props) — each
-  letting Claude browse Kalshi's live markets, pull real stats from ESPN
-  ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the web, and write up 2-3
-  value plays with the stats behind them. The combined report is DMed to one pre-authorized Discord
-  user. Nothing is ever placed — see [`docs/instructions.md`](src/main/resources/docs/instructions.md)
+  runs one independent research task per sport (CFB, Soccer, NFL, NBA player props, NCAA Men's
+  Basketball) — each letting Claude browse Kalshi's live markets, pull real stats from ESPN
+  ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the web, and write up every
+  value play it finds for TODAY's games only (never a future day — this is a same-day research
+  tool, not a swing-trade one). The combined report is DMed to one pre-authorized Discord user.
+  Nothing is ever placed — see [`docs/instructions.md`](src/main/resources/docs/instructions.md)
   for the exact methodology/format the model follows.
 - You can also just DM the bot directly any time ("find me some value plays in the NBA tonight",
   "what's Kalshi pricing the Chiefs game at") via the same Discord bot (see below).
@@ -138,7 +139,7 @@ service/       Sports catalog browsing (series -> events -> markets), P&L tracki
 sportsdata/    ESPN-backed team/player analytics (standings, head-to-head, recent form, box scores)
 web/           This app's own REST API + DTOs
 discord/       JDA-based Discord bot (gateway connection, DM/allowlist gate)
-scheduler/     Daily value-play report (research + Discord DM), P&L summaries
+scheduler/     Daily value-play report (research + Discord DM)
 orchestrator/  Anthropic tool-calling loop + tool classes wrapping the sportsdata/service layers
 ```
 

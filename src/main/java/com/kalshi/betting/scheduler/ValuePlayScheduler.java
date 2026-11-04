@@ -18,11 +18,13 @@ import java.util.List;
  * real research (ESPN analytics + server-side web search, see {@link OrchestratorService}), so the
  * user can decide and bet manually.
  * <p>
- * Runs 4 independent {@link OrchestratorService#chatOnce} calls, one per sport, rather than one
- * giant survey across all of them — a single unbounded survey has previously exhausted the whole
- * tool-call budget before producing anything useful (see {@code docs/instructions.md}'s warning
- * about this exact failure mode). Scoping each call to one sport gives it a full iteration budget of
- * its own and keeps each individual research task small enough to actually finish.
+ * Runs one independent {@link OrchestratorService#chatOnce} call per sport (see {@link #SPORT_TASKS})
+ * rather than one giant survey across all of them — a single unbounded survey has previously
+ * exhausted the whole tool-call budget before producing anything useful (see
+ * {@code docs/instructions.md}'s warning about this exact failure mode). Scoping each call to one
+ * sport gives it a full iteration budget of its own and keeps each individual research task small
+ * enough to actually finish. Every play is same-day only (see {@code docs/instructions.md}) — this
+ * is a same-day research tool, not a multi-day/swing-trade one.
  */
 @Component
 public class ValuePlayScheduler {
@@ -30,58 +32,57 @@ public class ValuePlayScheduler {
     private static final Logger log = LoggerFactory.getLogger(ValuePlayScheduler.class);
     private static final String ZONE = "America/Chicago";
 
-    /** One research task per sport. Each prompt asks for a SMALL number of plays so four of them add
-     *  up to roughly the user's requested 10, without over-committing any single call's tool budget. */
+    /** One research task per sport. Same-day only (see {@link #VALUE_METHODOLOGY}) means the pool per
+     *  sport is naturally bounded to a single day's slate, so each prompt asks for AS MANY plays as
+     *  genuinely clear the bar rather than a fixed small count — a deeper survey of a smaller (today-
+     *  only) pool is the whole point of going same-day. */
     private record SportTask(String label, String prompt) {
     }
 
     private static final List<SportTask> SPORT_TASKS = List.of(
             new SportTask("College Football", """
-                    Find your best 2-3 VALUE plays in College Football (Kalshi series like KXNCAAF and \
-                    its Spread/Total/Team Total variants) for games over the next few days (today through \
-                    the next 3-4 days — CFB mostly plays on Saturdays, so don't limit yourself to literally \
-                    today). Consider Moneyline, Spread, Point Total, and Team Total markets. For any total \
-                    or team-total play, pull both teams' recent scoring trend (GetTeamRecentFormTool), not \
-                    just their season-aggregate record — the whole point is finding a specific line where \
-                    the recent data disagrees with Kalshi's price, not just picking safe favorites."""),
+                    Find every genuine VALUE play in today's College Football games (Kalshi series like \
+                    KXNCAAF and its Spread/Total/Team Total variants). Consider Moneyline, Spread, Point \
+                    Total, and Team Total markets. For any total or team-total play, pull both teams' \
+                    recent scoring trend (GetTeamRecentFormTool), not just their season-aggregate record."""),
             new SportTask("Soccer", """
-                    Find your best 2-3 VALUE plays in Soccer (top European leagues and MLS — Kalshi series \
-                    like KXEPL, KXLALIGA, KXBUNDESLIGA, KXSERIEA, KXLIGUE1, KXMLS) for games over the next \
-                    few days. Focus on Point Total (goals) markets — NOT Moneyline (soccer's draw outcome \
-                    makes moneyline a weaker fit for this kind of stats-driven value search than a clean \
-                    over/under line). Spread (goal handicap) markets are fine too if a clear edge shows up. \
-                    Pull recent form (GetTeamRecentFormTool) and head-to-head for both teams — soccer totals \
-                    depend heavily on each team's actual recent scoring/conceding pattern, not just their \
-                    league position."""),
+                    Find every genuine VALUE play in today's Soccer games (top European leagues and MLS — \
+                    Kalshi series like KXEPL, KXLALIGA, KXBUNDESLIGA, KXSERIEA, KXLIGUE1, KXMLS). Focus on \
+                    Point Total (goals) markets — NOT Moneyline (soccer's draw outcome makes moneyline a \
+                    weaker fit here than a clean over/under line). Spread (goal handicap) is fine too if a \
+                    clear edge shows up. Pull recent form (GetTeamRecentFormTool) and head-to-head for both \
+                    teams."""),
             new SportTask("NFL", """
-                    Find your best 2-3 VALUE plays in the NFL (Kalshi series like KXNFL and its \
-                    Spread/Total/Team Total variants) for games over the next few days (NFL mostly plays \
-                    Thu/Sun/Mon, so don't limit yourself to literally today). Consider Moneyline, Spread, \
-                    Point Total, and Team Total markets, backed by both teams' standings, head-to-head, and \
-                    recent scoring form (GetTeamAnalyticsTool + GetTeamRecentFormTool)."""),
+                    Find every genuine VALUE play in today's NFL games (Kalshi series like KXNFL and its \
+                    Spread/Total/Team Total variants). Consider Moneyline, Spread, Point Total, and Team \
+                    Total markets, backed by both teams' standings, head-to-head, and recent scoring form \
+                    (GetTeamAnalyticsTool + GetTeamRecentFormTool)."""),
             new SportTask("NBA Player Props", """
-                    Find your best 2-3 VALUE PLAYER PROP plays in the NBA (Kalshi's NBA player-prop markets \
-                    — points/rebounds/assists thresholds) for games over the next few days. For every \
-                    candidate player prop, call GetPlayerRecentStatsTool for that player's last ~10 games \
-                    before recommending anything — state plainly how many of those recent games actually \
-                    cleared the specific threshold Kalshi is pricing, and compare that real hit-rate against \
-                    Kalshi's implied probability. Do not recommend a player prop you haven't pulled recent \
-                    game logs for.""")
+                    Find every genuine VALUE PLAYER PROP play in today's NBA games (Kalshi's NBA \
+                    player-prop markets — points/rebounds/assists thresholds). For every candidate player \
+                    prop, call GetPlayerRecentStatsTool for that player's last ~10 games before \
+                    recommending anything — state plainly how many of those recent games actually cleared \
+                    the specific threshold Kalshi is pricing. Do not recommend a player prop you haven't \
+                    pulled recent game logs for."""),
+            new SportTask("NCAA Men's Basketball", """
+                    Find every genuine VALUE play in today's NCAA Men's Basketball games (Kalshi series \
+                    KXNCAAMBGAME for moneyline, KXNCAAMBSPREAD, KXNCAAMBTOTAL, KXNCAAMBTEAMTOTAL — ESPN \
+                    league slug "mens-college-basketball"). Consider Moneyline, Spread, Point Total, and \
+                    Team Total markets, backed by recent scoring form (GetTeamRecentFormTool) — early \
+                    season means limited sample sizes, so say so plainly when a team's recent-form read is \
+                    thin rather than overstating confidence.""")
     );
 
-    /** Shared instruction appended to every sport task, since it's identical advice regardless of sport. */
+    /** Shared instruction appended to every sport task. Same-day-only and output-brevity rules already
+     *  live in {@code docs/instructions.md} (applies to every call, not just this scheduler) — this is
+     *  only the value-search framing specific to this scheduled report. */
     private static final String VALUE_METHODOLOGY = """
 
             Remember: this is a VALUE search, not a safe-favorite search — a play is only worth including \
             if the real stats-based probability you estimate is meaningfully better than Kalshi's own \
-            implied probability for that specific line (or, lacking a clean edge, state plainly that \
-            nothing in this sport cleared the bar rather than listing a play just to fill a quota). Use \
-            web search only to fill a specific gap the structured ESPN tools don't cover (e.g. injury \
-            news) — prefer the structured tools first since their numbers are exact. Follow the \
-            "Required format for recommended plays" from your instructions, extended to name the market \
-            type and line, and to state both Kalshi's implied probability and your own estimate side by \
-            side so the value is visible at a glance. This app never places bets — these are \
-            recommendations only.""";
+            implied probability for that specific line. Use web search only to fill a specific gap the \
+            structured ESPN tools don't cover — prefer the structured tools first since their numbers are \
+            exact.""";
 
     private final ObjectProvider<JDA> jdaProvider;
     private final OrchestratorService orchestratorService;
