@@ -41,29 +41,31 @@ public class ValuePlayScheduler {
 
     private static final List<SportTask> SPORT_TASKS = List.of(
             new SportTask("College Football", """
-                    Find every genuine VALUE play in today's College Football games (Kalshi series like \
-                    KXNCAAF and its Spread/Total/Team Total variants). Consider Moneyline, Spread, Point \
-                    Total, and Team Total markets. For any total or team-total play, pull both teams' \
-                    recent scoring trend (GetTeamRecentFormTool), not just their season-aggregate record."""),
+                    Find every genuine VALUE play in today's College Football games. Kalshi series: \
+                    KXNCAAFGAME (moneyline), KXNCAAFSPREAD, KXNCAAFTOTAL, KXNCAAFTEAMTOTAL. For any total \
+                    or team-total play, pull both teams' recent scoring trend (GetTeamRecentFormTool), not \
+                    just their season-aggregate record."""),
             new SportTask("Soccer", """
-                    Find every genuine VALUE play in today's Soccer games (top European leagues and MLS — \
-                    Kalshi series like KXEPL, KXLALIGA, KXBUNDESLIGA, KXSERIEA, KXLIGUE1, KXMLS). Focus on \
-                    Point Total (goals) markets — NOT Moneyline (soccer's draw outcome makes moneyline a \
-                    weaker fit here than a clean over/under line). Spread (goal handicap) is fine too if a \
-                    clear edge shows up. Pull recent form (GetTeamRecentFormTool) and head-to-head for both \
-                    teams."""),
+                    Find every genuine VALUE play in today's Soccer games across these leagues/series: \
+                    Premier League (KXEPLGAME/SPREAD/TOTAL/TEAMTOTAL), La Liga (KXLALIGAGAME/SPREAD/TOTAL/\
+                    TEAMTOTAL), Bundesliga (KXBUNDESLIGAGAME/SPREAD/TOTAL/TEAMTOTAL), Serie A \
+                    (KXSERIEAGAME/SPREAD/TOTAL/TEAMTOTAL), Ligue 1 (KXLIGUE1GAME/SPREAD/TOTAL/TEAMTOTAL), \
+                    MLS (KXMLSGAME/SPREAD/TOTAL/TEAMTOTAL). Focus on Point Total (goals) markets — NOT \
+                    Moneyline (soccer's draw outcome makes moneyline a weaker fit here than a clean \
+                    over/under line). Spread (goal handicap) is fine too if a clear edge shows up. Pull \
+                    recent form (GetTeamRecentFormTool) and head-to-head for both teams."""),
             new SportTask("NFL", """
-                    Find every genuine VALUE play in today's NFL games (Kalshi series like KXNFL and its \
-                    Spread/Total/Team Total variants). Consider Moneyline, Spread, Point Total, and Team \
-                    Total markets, backed by both teams' standings, head-to-head, and recent scoring form \
-                    (GetTeamAnalyticsTool + GetTeamRecentFormTool)."""),
+                    Find every genuine VALUE play in today's NFL games. Kalshi series: KXNFLGAME \
+                    (moneyline), KXNFLSPREAD, KXNFLTOTAL, KXNFLTEAMTOTAL. Backed by both teams' standings, \
+                    head-to-head, and recent scoring form (GetTeamAnalyticsTool + GetTeamRecentFormTool)."""),
             new SportTask("NBA Player Props", """
-                    Find every genuine VALUE PLAYER PROP play in today's NBA games (Kalshi's NBA \
-                    player-prop markets — points/rebounds/assists thresholds). For every candidate player \
-                    prop, call GetPlayerRecentStatsTool for that player's last ~10 games before \
-                    recommending anything — state plainly how many of those recent games actually cleared \
-                    the specific threshold Kalshi is pricing. Do not recommend a player prop you haven't \
-                    pulled recent game logs for."""),
+                    Find every genuine VALUE PLAYER PROP play in today's NBA games. Kalshi series: \
+                    KXNBAPTS (points), KXNBAREB (rebounds), KXNBAAST (assists) — use KXNBAGAME to see \
+                    today's actual game slate first, then check props for players in those games. For \
+                    every candidate player prop, call GetPlayerRecentStatsTool for that player's last ~10 \
+                    games before recommending anything — state plainly how many of those recent games \
+                    actually cleared the specific threshold Kalshi is pricing. Do not recommend a player \
+                    prop you haven't pulled recent game logs for."""),
             new SportTask("NCAA Men's Basketball", """
                     Find every genuine VALUE play in today's NCAA Men's Basketball games (Kalshi series \
                     KXNCAAMBGAME for moneyline, KXNCAAMBSPREAD, KXNCAAMBTOTAL, KXNCAAMBTEAMTOTAL — ESPN \

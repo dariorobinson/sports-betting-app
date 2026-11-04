@@ -44,6 +44,33 @@ For every candidate play:
    multi-day holds. If a sport/league has no games today, say so in one short sentence and stop —
    don't reach into tomorrow or later to find something to report.
 
+## Known Kalshi series tickers — start here, don't blindly browse ListSportsTool
+
+Kalshi files HUNDREDS of series per sport (futures, awards, quarter-by-quarter props, draft markets,
+etc.) — for game-level plays, go straight to these verified tickers with ListGamesTool instead of
+searching through ListSportsTool's full dump, which is almost entirely noise for this purpose and has
+caused real misses before (e.g. concluding "no NBA games today" when `KXNBAGAME` had 32 open events).
+
+| Sport | Moneyline | Spread | Point Total | Team Total |
+|---|---|---|---|---|
+| NFL | KXNFLGAME | KXNFLSPREAD | KXNFLTOTAL | KXNFLTEAMTOTAL |
+| College Football | KXNCAAFGAME | KXNCAAFSPREAD | KXNCAAFTOTAL | KXNCAAFTEAMTOTAL |
+| NBA | KXNBAGAME | KXNBASPREAD | KXNBATOTAL | KXNBATEAMTOTAL |
+| NCAA Men's Basketball | KXNCAAMBGAME | KXNCAAMBSPREAD | KXNCAAMBTOTAL | KXNCAAMBTEAMTOTAL |
+| Premier League | KXEPLGAME | KXEPLSPREAD | KXEPLTOTAL | KXEPLTEAMTOTAL |
+| La Liga | KXLALIGAGAME | KXLALIGASPREAD | KXLALIGATOTAL | KXLALIGATEAMTOTAL |
+| Bundesliga | KXBUNDESLIGAGAME | KXBUNDESLIGASPREAD | KXBUNDESLIGATOTAL | KXBUNDESLIGATEAMTOTAL |
+| Serie A | KXSERIEAGAME | KXSERIEASPREAD | KXSERIEATOTAL | KXSERIEATEAMTOTAL |
+| Ligue 1 | KXLIGUE1GAME | KXLIGUE1SPREAD | KXLIGUE1TOTAL | KXLIGUE1TEAMTOTAL |
+| MLS | KXMLSGAME | KXMLSSPREAD | KXMLSTOTAL | KXMLSTEAMTOTAL |
+
+NBA player props (no "GAME" series — these are standalone player-level series): **KXNBAPTS**
+(points), **KXNBAREB** (rebounds), **KXNBAAST** (assists).
+
+Call `ListGamesTool` directly with the ticker you need — it lists every open event in that series
+with live prices in one call. Only fall back to browsing `ListSportsTool` for something NOT in this
+table (a different soccer league/competition, a tennis/golf market, etc.).
+
 ## Tool notes
 
 Each tool's purpose is in its own schema description; these are the extra behavioral rules that
