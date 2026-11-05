@@ -41,38 +41,41 @@ public class ValuePlayScheduler {
 
     private static final List<SportTask> SPORT_TASKS = List.of(
             new SportTask("College Football", """
-                    Find every genuine VALUE play in today's College Football games. Kalshi series: \
-                    KXNCAAFGAME (moneyline), KXNCAAFSPREAD, KXNCAAFTOTAL, KXNCAAFTEAMTOTAL. For any total \
-                    or team-total play, pull both teams' recent scoring trend (GetTeamRecentFormTool), not \
-                    just their season-aggregate record."""),
+                    Call GetSportBoardTool with sport="NCAAF". Evaluate EVERY market group it returns for \
+                    today's games — Moneyline, Spread, Point Total, Team Total, and all the team-level game \
+                    props (touchdowns, rushing yards, receiving yards, sacks, interceptions) — not just \
+                    Moneyline. For any total/team-total/game-prop play, pull both teams' recent scoring \
+                    trend (GetTeamRecentFormTool), not just their season-aggregate record."""),
             new SportTask("Soccer", """
-                    Find every genuine VALUE play in today's Soccer games across these leagues/series: \
-                    Premier League (KXEPLGAME/SPREAD/TOTAL/TEAMTOTAL), La Liga (KXLALIGAGAME/SPREAD/TOTAL/\
-                    TEAMTOTAL), Bundesliga (KXBUNDESLIGAGAME/SPREAD/TOTAL/TEAMTOTAL), Serie A \
-                    (KXSERIEAGAME/SPREAD/TOTAL/TEAMTOTAL), Ligue 1 (KXLIGUE1GAME/SPREAD/TOTAL/TEAMTOTAL), \
-                    MLS (KXMLSGAME/SPREAD/TOTAL/TEAMTOTAL). Focus on Point Total (goals) markets — NOT \
-                    Moneyline (soccer's draw outcome makes moneyline a weaker fit here than a clean \
-                    over/under line). Spread (goal handicap) is fine too if a clear edge shows up. Pull \
-                    recent form (GetTeamRecentFormTool) and head-to-head for both teams."""),
+                    Call GetSportBoardTool with sport="SOCCER" (all 6 leagues in one call). Evaluate EVERY \
+                    market group for today's games — Moneyline, Spread, Point Total, Team Total, Anytime \
+                    Goalscorer, and Both Teams to Score — not just one market type. Apply extra scrutiny to \
+                    Moneyline specifically (soccer's draw outcome makes it a structurally weaker fit than a \
+                    clean over/under or goalscorer line), but don't skip it outright if the data shows a \
+                    real gap. Pull recent form (GetTeamRecentFormTool) and head-to-head for both teams."""),
             new SportTask("NFL", """
-                    Find every genuine VALUE play in today's NFL games. Kalshi series: KXNFLGAME \
-                    (moneyline), KXNFLSPREAD, KXNFLTOTAL, KXNFLTEAMTOTAL. Backed by both teams' standings, \
-                    head-to-head, and recent scoring form (GetTeamAnalyticsTool + GetTeamRecentFormTool)."""),
-            new SportTask("NBA Player Props", """
-                    Find every genuine VALUE PLAYER PROP play in today's NBA games. Kalshi series: \
-                    KXNBAPTS (points), KXNBAREB (rebounds), KXNBAAST (assists) — use KXNBAGAME to see \
-                    today's actual game slate first, then check props for players in those games. For \
-                    every candidate player prop, call GetPlayerRecentStatsTool for that player's last ~10 \
-                    games before recommending anything — state plainly how many of those recent games \
-                    actually cleared the specific threshold Kalshi is pricing. Do not recommend a player \
-                    prop you haven't pulled recent game logs for."""),
+                    Call GetSportBoardTool with sport="NFL". Evaluate EVERY market group it returns for \
+                    today's games — Moneyline, Spread, Point Total, Team Total, and all the player props \
+                    (passing yards, rushing yards, receptions, receiving yards, passing touchdowns) — not \
+                    just Moneyline. Back game lines with standings/head-to-head/recent form \
+                    (GetTeamAnalyticsTool + GetTeamRecentFormTool); back every player prop with \
+                    GetPlayerRecentStatsTool — do not recommend a player prop you haven't pulled recent \
+                    game logs for."""),
+            new SportTask("NBA", """
+                    Call GetSportBoardTool with sport="NBA". Evaluate EVERY market group it returns for \
+                    today's games — Moneyline, Spread, Point Total, Team Total, and all the player props \
+                    (points, rebounds, assists, steals, blocks, threes made) — not just Moneyline or just \
+                    props. Back game lines with GetTeamAnalyticsTool/GetTeamRecentFormTool; back every \
+                    player prop with GetPlayerRecentStatsTool for that player's last ~10 games — state \
+                    plainly how many actually cleared the specific threshold Kalshi is pricing. Do not \
+                    recommend a player prop you haven't pulled recent game logs for."""),
             new SportTask("NCAA Men's Basketball", """
-                    Find every genuine VALUE play in today's NCAA Men's Basketball games (Kalshi series \
-                    KXNCAAMBGAME for moneyline, KXNCAAMBSPREAD, KXNCAAMBTOTAL, KXNCAAMBTEAMTOTAL — ESPN \
-                    league slug "mens-college-basketball"). Consider Moneyline, Spread, Point Total, and \
-                    Team Total markets, backed by recent scoring form (GetTeamRecentFormTool) — early \
-                    season means limited sample sizes, so say so plainly when a team's recent-form read is \
-                    thin rather than overstating confidence.""")
+                    Call GetSportBoardTool with sport="NCAAMB". Evaluate EVERY market group it returns for \
+                    today's games — Moneyline, Spread, Point Total, and Team Total (no individual player \
+                    props exist for this sport on Kalshi). Back every play with recent scoring form \
+                    (GetTeamRecentFormTool, ESPN league slug "mens-college-basketball") — early season \
+                    means limited sample sizes, so say so plainly when a team's recent-form read is thin \
+                    rather than overstating confidence.""")
     );
 
     /** Shared instruction appended to every sport task. Same-day-only and output-brevity rules already

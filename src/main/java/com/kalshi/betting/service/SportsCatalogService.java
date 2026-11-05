@@ -4,7 +4,10 @@ import com.kalshi.betting.client.KalshiApiClient;
 import com.kalshi.betting.client.dto.EventData;
 import com.kalshi.betting.web.dto.GameSummary;
 import com.kalshi.betting.web.dto.OrderbookView;
+import com.kalshi.betting.web.dto.SportBoard;
 import com.kalshi.betting.web.dto.SportSummary;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -15,6 +18,8 @@ import java.util.Locale;
 /** Browsing surface over Kalshi's sports series/events/markets/orderbook — all read-only, no auth required by Kalshi. */
 @Service
 public class SportsCatalogService {
+
+    private static final Logger log = LoggerFactory.getLogger(SportsCatalogService.class);
 
     /** Kalshi's series category value for sports markets. */
     private static final String SPORTS_CATEGORY = "Sports";
@@ -79,6 +84,37 @@ public class SportsCatalogService {
         } catch (RuntimeException e) {
             return null;
         }
+    }
+
+    /**
+     * Every game line (Moneyline/Spread/Point Total/Team Total), player prop, and game prop series
+     * for one sport, today only — see {@link SportMarketRegistry} for exactly what's included per
+     * sport key (e.g. "NFL", "NCAAF", "NBA", "NCAAMB", "EPL", "SOCCER" for all 6 soccer leagues
+     * combined — see {@link SportMarketRegistry#knownKeys()} for the full list). Fetches every
+     * registered series in parallel (each one already same-day-filtered via {@link #listGames}) so
+     * this is ONE tool call for the model instead of discovering and calling each series
+     * individually — a single series' fetch failing doesn't fail the whole board, it's just omitted
+     * with a warning logged.
+     */
+    public SportBoard getSportBoard(String sportKey) {
+        List<SportMarketRegistry.SeriesEntry> registry = SportMarketRegistry.lookup(sportKey);
+        if (registry == null) {
+            throw new IllegalArgumentException("Unknown sport \"" + sportKey + "\" — known keys: "
+                    + SportMarketRegistry.knownKeys());
+        }
+        List<SportBoard.MarketGroup> groups = registry.parallelStream()
+                .map(entry -> {
+                    try {
+                        return new SportBoard.MarketGroup(
+                                entry.marketType(), entry.seriesTicker(), listGames(entry.seriesTicker()));
+                    } catch (RuntimeException e) {
+                        log.warn("Sport board: fetching {} ({}) failed: {}",
+                                entry.seriesTicker(), entry.marketType(), e.getMessage());
+                        return new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(), List.of());
+                    }
+                })
+                .toList();
+        return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups);
     }
 
     public GameSummary getGame(String eventTicker) {

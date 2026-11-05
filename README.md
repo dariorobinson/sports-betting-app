@@ -3,21 +3,24 @@
 A Spring Boot app that researches sports betting value on Kalshi and reports it — it does **not**
 place, cancel, or modify any bet. It compares real statistics (ESPN + web search) against Kalshi's
 live market prices to find plays where the data suggests a meaningfully better true probability than
-Kalshi's price implies, across College Football, Soccer, NFL, NBA (player props), and NCAA Men's
-Basketball. Built against Kalshi's Trade API v2 (`openapi.yaml` in this repo) for **market data
-only** — browsing series, events, markets, and order books, all public/read-only endpoints.
+Kalshi's price implies, across College Football, Soccer, NFL, NBA, and NCAA Men's Basketball —
+Moneyline, Spread, Point Total, Team Total, player props, and game props, not just moneyline. Built
+against Kalshi's Trade API v2 (`openapi.yaml` in this repo) for **market data only** — browsing
+series, events, markets, and order books, all public/read-only endpoints.
 
 Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
 
 ## How it works
 
 - Every morning (9am America/Chicago by default), [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
-  runs one independent research task per sport (CFB, Soccer, NFL, NBA player props, NCAA Men's
-  Basketball) — each letting Claude browse Kalshi's live markets, pull real stats from ESPN
-  ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the web, and write up every
-  value play it finds for TODAY's games only (never a future day — this is a same-day research
-  tool, not a swing-trade one). The combined report is DMed to one pre-authorized Discord user.
-  Nothing is ever placed — see [`docs/instructions.md`](src/main/resources/docs/instructions.md)
+  runs one independent research task per sport (CFB, Soccer, NFL, NBA, NCAA Men's Basketball) — each
+  letting Claude pull every game line/player prop/game prop series for that sport in one call
+  ([`GetSportBoardTool`](src/main/java/com/kalshi/betting/orchestrator/tool/GetSportBoardTool.java),
+  backed by the curated [`SportMarketRegistry`](src/main/java/com/kalshi/betting/service/SportMarketRegistry.java)),
+  pull real stats from ESPN ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the
+  web, and write up every value play it finds for TODAY's games only (never a future day — this is a
+  same-day research tool, not a swing-trade one). The combined report is DMed to one pre-authorized
+  Discord user. Nothing is ever placed — see [`docs/instructions.md`](src/main/resources/docs/instructions.md)
   for the exact methodology/format the model follows.
 - You can also just DM the bot directly any time ("find me some value plays in the NBA tonight",
   "what's Kalshi pricing the Chiefs game at") via the same Discord bot (see below).
@@ -121,7 +124,8 @@ exactly as before with no Discord dependency at all (check the startup log for a
 either way, no silent failure).
 
 Tool classes live in `orchestrator/tool/` — each is a thin adapter (`Supplier<String>` + Jackson
-annotations for the model-facing schema) over one service method: `ListSportsTool`, `ListGamesTool`,
+annotations for the model-facing schema) over one service method: `GetSportBoardTool` (every game
+line/player prop/game prop for a sport, today only, in one call), `ListSportsTool`, `ListGamesTool`,
 `GetGameTool`, `GetMarketOrderbookTool` (Kalshi market data), `GetTeamAnalyticsTool`,
 `GetIndividualAnalyticsTool`, `GetTeamRecentFormTool`, `GetPlayerRecentStatsTool` (ESPN stats).
 

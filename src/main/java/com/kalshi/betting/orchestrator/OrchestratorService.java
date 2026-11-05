@@ -77,6 +77,7 @@ public class OrchestratorService {
     private static final int SLIDING_BREAKPOINTS = 2;
 
     private static final List<Class<?>> TOOL_CLASSES = List.of(
+            GetSportBoardTool.class,
             ListSportsTool.class,
             ListGamesTool.class,
             GetGameTool.class,
