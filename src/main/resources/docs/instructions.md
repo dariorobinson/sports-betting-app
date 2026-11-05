@@ -83,7 +83,10 @@ aren't obvious from the schema:
   "hockey", "soccer") and league slug ("nba", "wnba", "nfl", "college-football",
   "mens-college-basketball", "mlb", "nhl", or a soccer competition code like "eng.1"/"usa.1"); infer
   them from the series ticker or team names. Always pass `opponentName` when you know the matchup
-  (one call gets head-to-head too).
+  (one call gets head-to-head too). Team names are matched fuzzily — **always check the returned
+  team's display name matches who you meant**, especially for short/ambiguous abbreviations (e.g.
+  "Miss State" could plausibly mean Mississippi State or Missouri State; prefer the fuller name —
+  "Mississippi State" — when a short form could collide with a different school).
 - **GetTeamRecentFormTool** — a team's last N played games (any opponent) with final scores, newest
   first. Use this for Spread/Total/Team Total reasoning — a season-aggregate stat can hide a recent
   trend (e.g. a high-scoring stretch, or a defense that's tightened up). Same sport/league slugs as

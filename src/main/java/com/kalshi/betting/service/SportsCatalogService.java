@@ -7,7 +7,10 @@ import com.kalshi.betting.web.dto.OrderbookView;
 import com.kalshi.betting.web.dto.SportSummary;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
+import java.util.Locale;
 
 /** Browsing surface over Kalshi's sports series/events/markets/orderbook — all read-only, no auth required by Kalshi. */
 @Service
@@ -15,6 +18,9 @@ public class SportsCatalogService {
 
     /** Kalshi's series category value for sports markets. */
     private static final String SPORTS_CATEGORY = "Sports";
+    private static final ZoneId ZONE = ZoneId.of("America/Chicago");
+    private static final List<String> MONTH_ABBREVS = List.of(
+            "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC");
 
     private final KalshiApiClient client;
 
@@ -28,10 +34,51 @@ public class SportsCatalogService {
                 .toList();
     }
 
-    /** Open games (events) for a given sport series, e.g. "NFL", "KXNBA". */
+    /**
+     * Open games (events) for a given sport series, e.g. "KXNFLGAME", "KXNBAGAME" — restricted to
+     * events played TODAY (America/Chicago). Kalshi's "open" status spans a multi-week window (a
+     * busy series like KXNCAAFGAME can have 200+ open events stretching two weeks out), and this app
+     * is explicitly a same-day research tool, not a multi-day one — returning every open event
+     * regardless of date was both wrong (surfaced future-day games) and, for high-volume series,
+     * large enough to occasionally blow past the model's prompt-size limit entirely. Events whose
+     * ticker doesn't parse to a date (futures/award/tournament-style series, not per-game) are left
+     * in rather than dropped, since "today" isn't a meaningful filter for those.
+     */
     public List<GameSummary> listGames(String seriesTicker) {
         List<EventData> events = client.listEvents(seriesTicker, "open", true).events();
-        return events.stream().map(GameSummary::from).toList();
+        LocalDate today = LocalDate.now(ZONE);
+        return events.stream()
+                .filter(e -> {
+                    LocalDate date = gameDate(e.eventTicker());
+                    return date == null || today.equals(date);
+                })
+                .map(GameSummary::from)
+                .toList();
+    }
+
+    /** The date a game is played, parsed from the ticker suffix after the series prefix (e.g.
+     *  "KXNBAGAME-26NOV05ATLWAS" -> 2026-11-05). Null if the suffix isn't a datable game ticker
+     *  (e.g. a futures/award series with no per-game date). */
+    private static LocalDate gameDate(String eventTicker) {
+        if (eventTicker == null) {
+            return null;
+        }
+        int dash = eventTicker.indexOf('-');
+        String key = dash < 0 ? eventTicker : eventTicker.substring(dash + 1);
+        if (key.length() < 7) {
+            return null;
+        }
+        try {
+            int year = 2000 + Integer.parseInt(key.substring(0, 2));
+            int month = MONTH_ABBREVS.indexOf(key.substring(2, 5).toUpperCase(Locale.ROOT)) + 1;
+            if (month == 0) {
+                return null;
+            }
+            int day = Integer.parseInt(key.substring(5, 7));
+            return LocalDate.of(year, month, day);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     public GameSummary getGame(String eventTicker) {

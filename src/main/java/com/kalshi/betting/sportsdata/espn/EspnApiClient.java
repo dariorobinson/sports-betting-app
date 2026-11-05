@@ -24,10 +24,16 @@ public class EspnApiClient {
         this.espnRestClient = espnRestClient;
     }
 
-    /** e.g. sport="basketball", league="nba". Full team list for the league (id, names, abbreviation). */
+    /** e.g. sport="basketball", league="nba". Full team list for the league (id, names, abbreviation).
+     *  limit=1000 is deliberately generous — confirmed live that college football alone has 762 teams
+     *  across every division, and ESPN's ordering is NOT alphabetical/FBS-first, so a lower limit
+     *  (this used to be 200) silently truncated real teams out of the list entirely (e.g. "Oregon
+     *  Ducks" was absent at limit=200/400 despite being a major program) rather than just being slow
+     *  to find. This response is only ever used internally for team-id lookup, never serialized back
+     *  to the model, so the larger payload has no token-cost downside.*/
     public EspnTeamsResponse listTeams(String sport, String league) {
         return espnRestClient.get()
-                .uri("/apis/site/v2/sports/{sport}/{league}/teams?limit=200", sport, league)
+                .uri("/apis/site/v2/sports/{sport}/{league}/teams?limit=1000", sport, league)
                 .retrieve()
                 .body(EspnTeamsResponse.class);
     }

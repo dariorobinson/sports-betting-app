@@ -19,9 +19,11 @@ import org.springframework.stereotype.Service;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Team- and individual-sport analytics (standings/rankings and head-to-head history) sourced from
@@ -63,10 +65,10 @@ public class SportsAnalyticsService {
 
     public TeamStanding getTeamStanding(String sport, String league, String teamName) {
         EspnStandingsResponse standings = espnApiClient.getStandings(sport, league);
-        EspnStandingsResponse.Entry match = standings.children().stream()
+        List<EspnStandingsResponse.Entry> entries = standings.children().stream()
                 .flatMap(c -> c.standings().entries().stream())
-                .filter(e -> matches(e.team(), teamName))
-                .findFirst()
+                .toList();
+        EspnStandingsResponse.Entry match = bestMatch(entries, EspnStandingsResponse.Entry::team, teamName)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "No team matching \"" + teamName + "\" found in " + sport + "/" + league));
 
@@ -217,12 +219,28 @@ public class SportsAnalyticsService {
 
     private Optional<EspnTeam> findTeam(String sport, String league, String teamName) {
         EspnTeamsResponse response = espnApiClient.listTeams(sport, league);
-        return response.sports().stream()
+        List<EspnTeam> candidates = response.sports().stream()
                 .flatMap(s -> s.leagues().stream())
                 .flatMap(l -> l.teams().stream())
                 .map(EspnTeamsResponse.TeamWrapper::team)
-                .filter(t -> matches(t, teamName))
-                .findFirst();
+                .toList();
+        return bestMatch(candidates, Function.identity(), teamName);
+    }
+
+    /** Picks the best-matching item among {@code items} whose extracted team satisfies
+     *  {@link #matches(EspnTeam, String)} — an exact (punctuation/case-insensitive) match on
+     *  name/location/abbreviation wins outright over a looser word-overlap match; among remaining
+     *  ties, prefers the shortest `location` name (the closest fit to a short/ambiguous query). This
+     *  matters because several real team names collide on a single common word — e.g. "Alabama"
+     *  word-matches "Alabama Crimson Tide", "Alabama State Hornets", AND "Alabama A&M Bulldogs", and
+     *  silently picking whichever ESPN happens to list first previously risked resolving to the
+     *  wrong team without any error. */
+    private static <T> Optional<T> bestMatch(List<T> items, Function<T, EspnTeam> teamOf, String query) {
+        String q = normalize(query);
+        return items.stream()
+                .filter(item -> matches(teamOf.apply(item), query))
+                .min(Comparator.<T>comparingInt(item -> isExactTeamMatch(teamOf.apply(item), q) ? 0 : 1)
+                        .thenComparingInt(item -> normalize(teamOf.apply(item).location()).length()));
     }
 
     public PlayerRanking getPlayerRanking(String sport, String tour, String playerName) {
@@ -322,19 +340,51 @@ public class SportsAnalyticsService {
                 || containsIgnoreCase(athlete.firstName() + " " + athlete.lastName(), q);
     }
 
-    /** Case-insensitive: exact abbreviation match, or the query appearing in any of the team's name fields. */
+    /** Exact abbreviation match, or EVERY word of the (normalized) query appearing somewhere across
+     *  the team's name fields — looser than a single whole-phrase substring match, which missed
+     *  natural abbreviations like "Ohio St." against ESPN's "Ohio State Buckeyes" (the literal
+     *  trailing period, and "St." vs "State", meant the old whole-string check never matched at all)
+     *  or "Miss State" against "Mississippi State Bulldogs". Still requires every meaningful query
+     *  word to be accounted for, not just any one of them, to avoid over-matching on a single common
+     *  word alone. */
     private static boolean matches(EspnTeam team, String query) {
         if (team == null || query == null || query.isBlank()) {
             return false;
         }
-        String q = query.trim().toLowerCase();
-        if (q.equalsIgnoreCase(team.abbreviation())) {
+        String q = normalize(query);
+        if (q.equalsIgnoreCase(normalize(team.abbreviation()))) {
             return true;
         }
-        return containsIgnoreCase(team.displayName(), q)
-                || containsIgnoreCase(team.shortDisplayName(), q)
-                || containsIgnoreCase(team.name(), q)
-                || containsIgnoreCase(team.location(), q);
+        String haystack = normalize(team.displayName()) + " " + normalize(team.shortDisplayName())
+                + " " + normalize(team.name()) + " " + normalize(team.location());
+        for (String word : q.split(" ")) {
+            if (!word.isBlank() && !haystack.contains(word)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** True if the normalized query is a full (not just word-overlap) match on one of the team's own
+     *  name fields or its abbreviation — used to prefer "Alabama" == "Alabama" (location) over a
+     *  same-word-but-longer rival like "Alabama State". */
+    private static boolean isExactTeamMatch(EspnTeam team, String normalizedQuery) {
+        if (team == null) {
+            return false;
+        }
+        return normalizedQuery.equals(normalize(team.displayName()))
+                || normalizedQuery.equals(normalize(team.location()))
+                || normalizedQuery.equals(normalize(team.shortDisplayName()))
+                || normalizedQuery.equalsIgnoreCase(team.abbreviation());
+    }
+
+    /** Lowercases, strips periods/commas (so "St." lines up with "State"'s "st" prefix, and "Ohio
+     *  St." can be found inside "Ohio State Buckeyes"), and collapses whitespace. */
+    private static String normalize(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.toLowerCase(Locale.ROOT).replaceAll("[.,]", "").trim().replaceAll("\\s+", " ");
     }
 
     private static boolean containsIgnoreCase(String haystack, String needleLower) {
