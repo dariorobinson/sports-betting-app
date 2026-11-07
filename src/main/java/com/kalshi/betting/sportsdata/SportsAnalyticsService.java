@@ -66,7 +66,11 @@ public class SportsAnalyticsService {
 
     public TeamStanding getTeamStanding(String sport, String league, String teamName) {
         EspnStandingsResponse standings = espnApiClient.getStandings(sport, league);
-        List<EspnStandingsResponse.Entry> entries = standings.children().stream()
+        // Some conference groupings come back with a null `standings` (and/or null `entries`) —
+        // confirmed live (college football), not something to assume is always populated.
+        List<EspnStandingsResponse.Entry> entries = (standings.children() == null
+                ? List.<EspnStandingsResponse.Conference>of() : standings.children()).stream()
+                .filter(c -> c.standings() != null && c.standings().entries() != null)
                 .flatMap(c -> c.standings().entries().stream())
                 .toList();
         EspnStandingsResponse.Entry match = bestMatch(entries, EspnStandingsResponse.Entry::team, teamName)
@@ -421,13 +425,17 @@ public class SportsAnalyticsService {
                 || normalizedQuery.equalsIgnoreCase(team.abbreviation());
     }
 
-    /** Lowercases, strips periods/commas (so "St." lines up with "State"'s "st" prefix, and "Ohio
-     *  St." can be found inside "Ohio State Buckeyes"), and collapses whitespace. */
+    /** Lowercases, folds accented characters to their plain-ASCII form (so a query spelled "Jose"
+     *  still finds ESPN's "San José State" — confirmed live as a real production miss), strips
+     *  periods/commas (so "St." lines up with "State"'s "st" prefix, and "Ohio St." can be found
+     *  inside "Ohio State Buckeyes"), and collapses whitespace. */
     private static String normalize(String s) {
         if (s == null) {
             return "";
         }
-        return s.toLowerCase(Locale.ROOT).replaceAll("[.,]", "").trim().replaceAll("\\s+", " ");
+        String folded = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "");
+        return folded.toLowerCase(Locale.ROOT).replaceAll("[.,]", "").trim().replaceAll("\\s+", " ");
     }
 
     /** Known ESPN branding quirks where a team's commonly-used/official name shares too few words
@@ -447,7 +455,15 @@ public class SportsAnalyticsService {
             Map.entry("southern university", "southern"),
             Map.entry("appalachian state", "app state"),
             Map.entry("appalachian st", "app state"),
-            Map.entry("southeastern louisiana", "se louisiana"));
+            Map.entry("southeastern louisiana", "se louisiana"),
+            Map.entry("miami (fl)", "miami"),
+            // Deliberately NOT a bare "albany" alias — "Albany State Golden Rams" is a real, separate
+            // D-II/HBCU program also in ESPN's data; only Kalshi's specific full phrasing is aliased.
+            Map.entry("university at albany", "ualbany"),
+            Map.entry("nicholls state", "nicholls"),
+            Map.entry("nicholls st", "nicholls"),
+            Map.entry("central connecticut state", "central connecticut"),
+            Map.entry("central connecticut st", "central connecticut"));
 
     /** {@link #normalize}, with a known alias substituted if the normalized query exactly matches
      *  one — see {@link #TEAM_NAME_ALIASES}. */
