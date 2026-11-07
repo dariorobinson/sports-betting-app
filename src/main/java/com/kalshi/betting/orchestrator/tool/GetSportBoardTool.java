@@ -17,10 +17,13 @@ import java.util.function.Supplier;
         + "compact avg-points-for/against summary for EVERY team playing today in this sport's "
         + "Moneyline games (not just high-profile ones) — use that for a first-pass read on every "
         + "game on a busy slate, and only call GetTeamRecentFormTool for the full game-by-game detail "
-        + "on specific games you're seriously close to recommending. ALWAYS call this fresh for a new "
-        + "'find me plays' request, even if you already called it earlier in this conversation — never "
-        + "reuse an old result as if it's today's, since game data and the actual current date change "
-        + "between messages.")
+        + "on specific games you're seriously close to recommending. Each market here is COMPACT "
+        + "(ticker, label, implied probability only — no American odds, no 'no' side) to keep a "
+        + "100+ game slate's response size sane; before finalizing any recommendation, call GetGameTool "
+        + "with that market's eventTicker to get the full odds you're required to report. ALWAYS call "
+        + "this fresh for a new 'find me plays' request, even if you already called it earlier in this "
+        + "conversation — never reuse an old result as if it's today's, since game data and the actual "
+        + "current date change between messages.")
 public class GetSportBoardTool implements Supplier<String> {
 
     private static final Logger log = LoggerFactory.getLogger(GetSportBoardTool.class);

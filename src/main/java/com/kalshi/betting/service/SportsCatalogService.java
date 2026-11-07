@@ -4,6 +4,7 @@ import com.kalshi.betting.client.KalshiApiClient;
 import com.kalshi.betting.client.dto.EventData;
 import com.kalshi.betting.sportsdata.SportsAnalyticsService;
 import com.kalshi.betting.sportsdata.TeamScoringTrend;
+import com.kalshi.betting.web.dto.CompactMarket;
 import com.kalshi.betting.web.dto.GameSummary;
 import com.kalshi.betting.web.dto.OrderbookView;
 import com.kalshi.betting.web.dto.SportBoard;
@@ -112,23 +113,59 @@ public class SportsCatalogService {
             throw new IllegalArgumentException("Unknown sport \"" + sportKey + "\" — known keys: "
                     + SportMarketRegistry.knownKeys());
         }
-        List<SportBoard.MarketGroup> groups = registry.parallelStream()
-                .map(entry -> {
-                    try {
-                        return new SportBoard.MarketGroup(
-                                entry.marketType(), entry.seriesTicker(), listGames(entry.seriesTicker()));
-                    } catch (RuntimeException e) {
-                        log.warn("Sport board: fetching {} ({}) failed: {}",
-                                entry.seriesTicker(), entry.marketType(), e.getMessage());
-                        return new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(), List.of());
-                    }
-                })
-                .toList();
-        List<TeamScoringTrend> trends = fetchTeamScoringTrends(registry, groups);
+        List<FetchedGroup> fetched = registry.parallelStream().map(this::fetchMarketGroup).toList();
+
+        List<SportBoard.MarketGroup> groups = fetched.stream().map(FetchedGroup::group).toList();
+        List<TeamLookup> teamLookups = fetched.stream().flatMap(f -> f.teamLookups().stream()).toList();
+        List<TeamScoringTrend> trends = fetchTeamScoringTrends(teamLookups);
+
         return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups, trends);
     }
 
     private record TeamLookup(String espnSport, String espnLeague, String teamName) {
+    }
+
+    private record FetchedGroup(SportBoard.MarketGroup group, List<TeamLookup> teamLookups) {
+    }
+
+    /**
+     * Fetches one series' games (already same-day-filtered via {@link #listGames}), trims each
+     * market down to its {@link CompactMarket} view (dropping American odds and the always-redundant
+     * "no" side — see that record's javadoc; only inactive/settled markets are dropped entirely, no
+     * game is ever dropped), and — if this is a Moneyline series (ticker ends in "GAME") — also
+     * collects every team name playing today for {@link #fetchTeamScoringTrends}, in the same pass
+     * over the same fetch rather than a second HTTP call per series.
+     */
+    private FetchedGroup fetchMarketGroup(SportMarketRegistry.SeriesEntry entry) {
+        List<GameSummary> rawGames;
+        try {
+            rawGames = listGames(entry.seriesTicker());
+        } catch (RuntimeException e) {
+            log.warn("Sport board: fetching {} ({}) failed: {}",
+                    entry.seriesTicker(), entry.marketType(), e.getMessage());
+            return new FetchedGroup(
+                    new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(), List.of()), List.of());
+        }
+
+        List<TeamLookup> lookups = new ArrayList<>();
+        if (entry.seriesTicker().endsWith("GAME") && entry.espnSport() != null) {
+            for (GameSummary game : rawGames) {
+                for (String team : splitTeams(game.title())) {
+                    lookups.add(new TeamLookup(entry.espnSport(), entry.espnLeague(), team));
+                }
+            }
+        }
+
+        List<SportBoard.CompactGame> compactGames = rawGames.stream()
+                .map(g -> new SportBoard.CompactGame(g.eventTicker(), g.title(),
+                        g.markets().stream()
+                                .filter(m -> "active".equalsIgnoreCase(m.status()))
+                                .map(CompactMarket::from)
+                                .toList()))
+                .toList();
+
+        return new FetchedGroup(
+                new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(), compactGames), lookups);
     }
 
     /**
@@ -138,29 +175,11 @@ public class SportsCatalogService {
      * That doesn't scale: a single College Football Saturday can have 90+ games / 180+ teams, far more
      * than the agentic loop's iteration budget could otherwise cover one team at a time — which
      * previously led to the model only deeply researching a handful of "high-profile" games and
-     * giving up on the rest of the slate. Moneyline-series games are identified by the series ticker
-     * ending in "GAME" (true for every Moneyline entry in {@link SportMarketRegistry}); team names are
-     * parsed from each game's "{Team A} vs {Team B}" title, which Kalshi provides consistently at the
-     * event level across every sport this app covers.
+     * giving up on the rest of the slate. Team names are parsed from each game's "{Team A} vs
+     * {Team B}" title, which Kalshi provides consistently at the event level across every sport this
+     * app covers (confirmed live across all 5 target sports).
      */
-    private List<TeamScoringTrend> fetchTeamScoringTrends(List<SportMarketRegistry.SeriesEntry> registry,
-                                                            List<SportBoard.MarketGroup> groups) {
-        List<TeamLookup> lookups = new ArrayList<>();
-        for (SportMarketRegistry.SeriesEntry entry : registry) {
-            if (!entry.seriesTicker().endsWith("GAME") || entry.espnSport() == null) {
-                continue;
-            }
-            groups.stream()
-                    .filter(g -> g.seriesTicker().equals(entry.seriesTicker()))
-                    .findFirst()
-                    .ifPresent(group -> {
-                        for (GameSummary game : group.games()) {
-                            for (String team : splitTeams(game.title())) {
-                                lookups.add(new TeamLookup(entry.espnSport(), entry.espnLeague(), team));
-                            }
-                        }
-                    });
-        }
+    private List<TeamScoringTrend> fetchTeamScoringTrends(List<TeamLookup> lookups) {
         return lookups.stream().distinct().toList().parallelStream()
                 .map(lk -> {
                     try {

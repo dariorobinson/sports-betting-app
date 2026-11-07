@@ -82,6 +82,13 @@ College football and NCAA Men's Basketball have no individual PLAYER props on Ka
 fact) — CFB instead has team-level game props (team touchdowns, team rushing/receiving yards, etc.),
 also included in its board. NCAA Men's Basketball only has the 4 game lines.
 
+**Each market in the board is compact — ticker, line label, and implied probability only. It does
+NOT include American odds** (dropped specifically to keep a 100+ game slate's response size from
+exceeding the prompt limit, which has actually happened). Before finalizing ANY recommendation, call
+`GetGameTool` with that market's `eventTicker` to get the full market detail, including the
+`*AmericanOdds` field the required report format needs — never fabricate odds from the implied
+probability yourself.
+
 If you need a market type this tool doesn't cover (a different soccer league, a tennis/golf market,
 something niche), fall back to `ListSportsTool` to discover the series, then `ListGamesTool` to pull
 it directly — both still work exactly as before.
@@ -93,8 +100,10 @@ aren't obvious from the schema:
 
 - **GetSportBoardTool** — see above; this is the primary discovery tool for play-finding requests.
 - **GetGameTool** — don't loop it over every game in a series to "check" each one; GetSportBoardTool/
-  ListGamesTool already return live prices for every game in one call. Only use GetGameTool for the
-  handful you're seriously considering, after narrowing down.
+  ListGamesTool already return a price for every game in one call. Use GetGameTool for the handful
+  you're seriously considering after narrowing down, AND as the required last step before reporting
+  any GetSportBoardTool-sourced play (its board entries are compact and have no American odds — see
+  above).
 - **GetTeamAnalyticsTool** — needs an ESPN sport slug ("basketball", "football", "baseball",
   "hockey", "soccer") and league slug ("nba", "wnba", "nfl", "college-football",
   "mens-college-basketball", "mlb", "nhl", or a soccer competition code like "eng.1"/"usa.1"); infer
