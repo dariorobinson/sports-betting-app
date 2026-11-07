@@ -2,6 +2,8 @@ package com.kalshi.betting.service;
 
 import com.kalshi.betting.client.KalshiApiClient;
 import com.kalshi.betting.client.dto.EventData;
+import com.kalshi.betting.sportsdata.SportsAnalyticsService;
+import com.kalshi.betting.sportsdata.TeamScoringTrend;
 import com.kalshi.betting.web.dto.GameSummary;
 import com.kalshi.betting.web.dto.OrderbookView;
 import com.kalshi.betting.web.dto.SportBoard;
@@ -12,8 +14,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 /** Browsing surface over Kalshi's sports series/events/markets/orderbook — all read-only, no auth required by Kalshi. */
 @Service
@@ -26,11 +30,17 @@ public class SportsCatalogService {
     private static final ZoneId ZONE = ZoneId.of("America/Chicago");
     private static final List<String> MONTH_ABBREVS = List.of(
             "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC");
+    /** How many recent games {@link #getSportBoard}'s bulk scoring-trend lookup averages over per
+     *  team — smaller than {@code SportsAnalyticsService.DEFAULT_RECENT_GAMES} since this gets
+     *  multiplied across every team in a sport's whole slate (up to 180+ on a busy CFB Saturday). */
+    private static final int BOARD_TREND_LOOKBACK_GAMES = 5;
 
     private final KalshiApiClient client;
+    private final SportsAnalyticsService sportsAnalyticsService;
 
-    public SportsCatalogService(KalshiApiClient client) {
+    public SportsCatalogService(KalshiApiClient client, SportsAnalyticsService sportsAnalyticsService) {
         this.client = client;
+        this.sportsAnalyticsService = sportsAnalyticsService;
     }
 
     public List<SportSummary> listSports() {
@@ -114,7 +124,66 @@ public class SportsCatalogService {
                     }
                 })
                 .toList();
-        return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups);
+        List<TeamScoringTrend> trends = fetchTeamScoringTrends(registry, groups);
+        return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups, trends);
+    }
+
+    private record TeamLookup(String espnSport, String espnLeague, String teamName) {
+    }
+
+    /**
+     * Bulk-fetches a compact recent-scoring-trend summary for every distinct team appearing in this
+     * sport's Moneyline game(s) today — so the model gets the stats signal it needs for an ENTIRE
+     * slate up front, in this same tool call, instead of calling GetTeamRecentFormTool once per team.
+     * That doesn't scale: a single College Football Saturday can have 90+ games / 180+ teams, far more
+     * than the agentic loop's iteration budget could otherwise cover one team at a time — which
+     * previously led to the model only deeply researching a handful of "high-profile" games and
+     * giving up on the rest of the slate. Moneyline-series games are identified by the series ticker
+     * ending in "GAME" (true for every Moneyline entry in {@link SportMarketRegistry}); team names are
+     * parsed from each game's "{Team A} vs {Team B}" title, which Kalshi provides consistently at the
+     * event level across every sport this app covers.
+     */
+    private List<TeamScoringTrend> fetchTeamScoringTrends(List<SportMarketRegistry.SeriesEntry> registry,
+                                                            List<SportBoard.MarketGroup> groups) {
+        List<TeamLookup> lookups = new ArrayList<>();
+        for (SportMarketRegistry.SeriesEntry entry : registry) {
+            if (!entry.seriesTicker().endsWith("GAME") || entry.espnSport() == null) {
+                continue;
+            }
+            groups.stream()
+                    .filter(g -> g.seriesTicker().equals(entry.seriesTicker()))
+                    .findFirst()
+                    .ifPresent(group -> {
+                        for (GameSummary game : group.games()) {
+                            for (String team : splitTeams(game.title())) {
+                                lookups.add(new TeamLookup(entry.espnSport(), entry.espnLeague(), team));
+                            }
+                        }
+                    });
+        }
+        return lookups.stream().distinct().toList().parallelStream()
+                .map(lk -> {
+                    try {
+                        return sportsAnalyticsService.getTeamScoringTrend(
+                                lk.espnSport(), lk.espnLeague(), lk.teamName(), BOARD_TREND_LOOKBACK_GAMES);
+                    } catch (RuntimeException e) {
+                        log.warn("Sport board: scoring trend for {} ({}/{}) failed: {}",
+                                lk.teamName(), lk.espnSport(), lk.espnLeague(), e.getMessage());
+                        return null;
+                    }
+                })
+                .filter(Objects::nonNull)
+                .toList();
+    }
+
+    /** Kalshi's event {@code title} is consistently "{Team A} vs {Team B}" across every sport this
+     *  app covers — returns both names, or an empty list if the title doesn't match that shape. */
+    private static List<String> splitTeams(String title) {
+        if (title == null || !title.contains(" vs ")) {
+            return List.of();
+        }
+        String[] parts = title.split(" vs ", 2);
+        return List.of(parts[0].trim(), parts[1].trim());
     }
 
     public GameSummary getGame(String eventTicker) {

@@ -13,7 +13,14 @@ import java.util.function.Supplier;
         + "series for that sport, for TODAY's games only — already same-day filtered, no need to "
         + "call ListGamesTool per market type yourself. Evaluate every market group returned, not "
         + "just Moneyline — the whole point of this tool is full coverage in one shot instead of "
-        + "accidentally skipping Spread/Total/Team Total/props.")
+        + "accidentally skipping Spread/Total/Team Total/props. ALSO returns teamScoringTrends: a "
+        + "compact avg-points-for/against summary for EVERY team playing today in this sport's "
+        + "Moneyline games (not just high-profile ones) — use that for a first-pass read on every "
+        + "game on a busy slate, and only call GetTeamRecentFormTool for the full game-by-game detail "
+        + "on specific games you're seriously close to recommending. ALWAYS call this fresh for a new "
+        + "'find me plays' request, even if you already called it earlier in this conversation — never "
+        + "reuse an old result as if it's today's, since game data and the actual current date change "
+        + "between messages.")
 public class GetSportBoardTool implements Supplier<String> {
 
     private static final Logger log = LoggerFactory.getLogger(GetSportBoardTool.class);

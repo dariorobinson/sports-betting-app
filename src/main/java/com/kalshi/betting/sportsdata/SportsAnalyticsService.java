@@ -16,6 +16,7 @@ import com.kalshi.betting.sportsdata.espn.dto.EspnTeam;
 import com.kalshi.betting.sportsdata.espn.dto.EspnTeamsResponse;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -141,6 +142,48 @@ public class SportsAnalyticsService {
                 .toList();
 
         return new TeamRecentForm(team.displayName(), games);
+    }
+
+    /** Compact average-points-for/against summary over the last {@code lastN} played games — a much
+     *  smaller payload than {@link #getTeamRecentForm}'s full per-game list, meant for bulk use across
+     *  dozens/hundreds of teams at once (see {@code SportsCatalogService#getSportBoard}, which bulk-
+     *  fetches this for every team in a sport's Moneyline games so a busy slate's worth of teams can
+     *  be covered in one tool call instead of one model-driven call per team). Use
+     *  {@link #getTeamRecentForm} instead when you want the full game-by-game detail for one team. */
+    public TeamScoringTrend getTeamScoringTrend(String sport, String league, String teamName, int lastN) {
+        TeamRecentForm form = getTeamRecentForm(sport, league, teamName, lastN);
+        List<Double> pointsFor = new ArrayList<>();
+        List<Double> pointsAgainst = new ArrayList<>();
+        for (TeamRecentForm.Game g : form.recentGames()) {
+            Double pf = parseScore(g.teamScore());
+            Double pa = parseScore(g.opponentScore());
+            if (pf != null) {
+                pointsFor.add(pf);
+            }
+            if (pa != null) {
+                pointsAgainst.add(pa);
+            }
+        }
+        return new TeamScoringTrend(form.team(), average(pointsFor), average(pointsAgainst), pointsFor.size());
+    }
+
+    private static Double parseScore(String s) {
+        if (s == null) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static String average(List<Double> values) {
+        if (values.isEmpty()) {
+            return null;
+        }
+        double avg = values.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+        return String.format(Locale.ROOT, "%.1f", avg);
     }
 
     private static Optional<TeamRecentForm.Game> toRecentGame(EspnScheduleResponse.Event event, String teamId) {
