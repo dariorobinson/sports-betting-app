@@ -279,7 +279,7 @@ public class SportsAnalyticsService {
      *  silently picking whichever ESPN happens to list first previously risked resolving to the
      *  wrong team without any error. */
     private static <T> Optional<T> bestMatch(List<T> items, Function<T, EspnTeam> teamOf, String query) {
-        String q = normalize(query);
+        String q = normalizeTeamQuery(query);
         return items.stream()
                 .filter(item -> matches(teamOf.apply(item), query))
                 .min(Comparator.<T>comparingInt(item -> isExactTeamMatch(teamOf.apply(item), q) ? 0 : 1)
@@ -394,7 +394,7 @@ public class SportsAnalyticsService {
         if (team == null || query == null || query.isBlank()) {
             return false;
         }
-        String q = normalize(query);
+        String q = normalizeTeamQuery(query);
         if (q.equalsIgnoreCase(normalize(team.abbreviation()))) {
             return true;
         }
@@ -428,6 +428,32 @@ public class SportsAnalyticsService {
             return "";
         }
         return s.toLowerCase(Locale.ROOT).replaceAll("[.,]", "").trim().replaceAll("\\s+", " ");
+    }
+
+    /** Known ESPN branding quirks where a team's commonly-used/official name shares too few words
+     *  with what ESPN itself calls it for the word-overlap match above to find it at all — a
+     *  genuinely different abbreviation, not just a punctuation/spacing difference (those are already
+     *  handled by {@link #normalize}). Confirmed by checking ESPN's live team list directly after
+     *  real production failures (e.g. "Tennessee-Martin", never resolving to ESPN's "UT Martin").
+     *  Keyed by normalized query. Some teams Kalshi lists (e.g. "UT Rio Grande Valley") genuinely
+     *  don't exist anywhere in ESPN's college-football data at all — no alias fixes that; it's
+     *  expected to keep failing, gracefully, for that specific program. */
+    private static final Map<String, String> TEAM_NAME_ALIASES = Map.ofEntries(
+            Map.entry("tennessee-martin", "ut martin"),
+            Map.entry("grambling state", "grambling"),
+            Map.entry("grambling st", "grambling"),
+            Map.entry("louisiana-monroe", "ul monroe"),
+            Map.entry("louisiana monroe", "ul monroe"),
+            Map.entry("southern university", "southern"),
+            Map.entry("appalachian state", "app state"),
+            Map.entry("appalachian st", "app state"),
+            Map.entry("southeastern louisiana", "se louisiana"));
+
+    /** {@link #normalize}, with a known alias substituted if the normalized query exactly matches
+     *  one — see {@link #TEAM_NAME_ALIASES}. */
+    private static String normalizeTeamQuery(String query) {
+        String q = normalize(query);
+        return TEAM_NAME_ALIASES.getOrDefault(q, q);
     }
 
     private static boolean containsIgnoreCase(String haystack, String needleLower) {
