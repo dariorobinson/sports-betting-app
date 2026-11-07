@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
  * default loopback-only network binding.
  * <p>
  * {@code POST /api/scheduler/value-plays/run} runs the exact same research-and-DM cycle as the
- * {@code @Scheduled} 9am job — never places a bet, just on demand instead of waiting for 9am.
+ * {@code @Scheduled} 7:30am job — never places a bet, just on demand instead of waiting for 7:30am.
  */
 @RestController
 @RequestMapping("/api/scheduler")

@@ -12,7 +12,7 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
 
 ## How it works
 
-- Every morning (9am America/Chicago by default), [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
+- Every morning (7:30am America/Chicago by default), [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
   runs one independent research task per sport (CFB, Soccer, NFL, NBA, NCAA Men's Basketball) — each
   letting Claude pull every game line/player prop/game prop series for that sport in one call
   ([`GetSportBoardTool`](src/main/java/com/kalshi/betting/orchestrator/tool/GetSportBoardTool.java),

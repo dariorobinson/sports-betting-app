@@ -100,7 +100,7 @@ public class ValuePlayScheduler {
         this.authorizedUserId = authorizedUserId;
     }
 
-    @Scheduled(cron = "0 0 9 * * *", zone = ZONE)
+    @Scheduled(cron = "0 30 7 * * *", zone = ZONE)
     public void runDailyReport() {
         execute();
     }
