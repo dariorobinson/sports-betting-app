@@ -20,10 +20,10 @@ public class EspnWebApiClient {
     /** Recent games (current season, newest first within each month bucket) with a per-game stat
      *  line — e.g. sport="basketball", league="nba". */
     public EspnAthleteGameLogResponse getAthleteGameLog(String sport, String league, String athleteId) {
-        return espnWebRestClient.get()
+        return EspnRetry.call(() -> espnWebRestClient.get()
                 .uri("/apis/common/v3/sports/{sport}/{league}/athletes/{athleteId}/gamelog",
                         sport, league, athleteId)
                 .retrieve()
-                .body(EspnAthleteGameLogResponse.class);
+                .body(EspnAthleteGameLogResponse.class));
     }
 }

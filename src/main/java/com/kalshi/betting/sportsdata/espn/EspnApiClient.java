@@ -32,18 +32,18 @@ public class EspnApiClient {
      *  to find. This response is only ever used internally for team-id lookup, never serialized back
      *  to the model, so the larger payload has no token-cost downside.*/
     public EspnTeamsResponse listTeams(String sport, String league) {
-        return espnRestClient.get()
+        return EspnRetry.call(() -> espnRestClient.get()
                 .uri("/apis/site/v2/sports/{sport}/{league}/teams?limit=1000", sport, league)
                 .retrieve()
-                .body(EspnTeamsResponse.class);
+                .body(EspnTeamsResponse.class));
     }
 
     /** Current standings across all conferences/divisions, with per-team record/stat breakdowns. */
     public EspnStandingsResponse getStandings(String sport, String league) {
-        return espnRestClient.get()
+        return EspnRetry.call(() -> espnRestClient.get()
                 .uri("/apis/v2/sports/{sport}/{league}/standings", sport, league)
                 .retrieve()
-                .body(EspnStandingsResponse.class);
+                .body(EspnStandingsResponse.class));
     }
 
     /**
@@ -54,35 +54,35 @@ public class EspnApiClient {
     public EspnScheduleResponse getTeamSchedule(String sport, String league, String teamId, String season) {
         String uri = "/apis/site/v2/sports/{sport}/{league}/teams/{teamId}/schedule"
                 + (season != null && !season.isBlank() ? "?season=" + season : "");
-        return espnRestClient.get()
+        return EspnRetry.call(() -> espnRestClient.get()
                 .uri(uri, sport, league, teamId)
                 .retrieve()
-                .body(EspnScheduleResponse.class);
+                .body(EspnScheduleResponse.class));
     }
 
     /** World rankings for individual-athlete sports, e.g. sport="tennis", tour="atp"/"wta". */
     public EspnRankingsResponse getRankings(String sport, String tour) {
-        return espnRestClient.get()
+        return EspnRetry.call(() -> espnRestClient.get()
                 .uri("/apis/site/v2/sports/{sport}/{tour}/rankings", sport, tour)
                 .retrieve()
-                .body(EspnRankingsResponse.class);
+                .body(EspnRankingsResponse.class));
     }
 
     /** Live/current event scoreboard — for golf, this doubles as the tournament leaderboard. */
     public EspnScoreboardResponse getScoreboard(String sport, String league) {
-        return espnRestClient.get()
+        return EspnRetry.call(() -> espnRestClient.get()
                 .uri("/apis/site/v2/sports/{sport}/{league}/scoreboard", sport, league)
                 .retrieve()
-                .body(EspnScoreboardResponse.class);
+                .body(EspnScoreboardResponse.class));
     }
 
     /** A team's full roster (every rostered athlete, with id) — used to resolve a player name to the
      *  athlete id {@link EspnWebApiClient#getAthleteGameLog} needs, since there's no direct
      *  "search athlete by name" endpoint. */
     public EspnRosterResponse getRoster(String sport, String league, String teamId) {
-        return espnRestClient.get()
+        return EspnRetry.call(() -> espnRestClient.get()
                 .uri("/apis/site/v2/sports/{sport}/{league}/teams/{teamId}/roster", sport, league, teamId)
                 .retrieve()
-                .body(EspnRosterResponse.class);
+                .body(EspnRosterResponse.class));
     }
 }

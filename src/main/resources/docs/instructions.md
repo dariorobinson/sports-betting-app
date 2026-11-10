@@ -134,6 +134,12 @@ aren't obvious from the schema:
   sports in particular report this far less consistently than the pros; say so if an empty report
   feels like it might just be a reporting gap rather than a genuinely clean bill of health, for a
   game where that distinction actually matters to your estimate.
+- **If GetPlayerRecentStatsTool or GetInjuryReportTool errors for a specific player/team, retry that
+  ONE call once before giving up on it** — both read from ESPN's roster endpoint, which can hit a
+  transient hiccup under a burst of back-to-back calls (the app already retries automatically a
+  couple of times under the hood, but a longer-lived blip can still surface as an error). A failure
+  on one player/team is NOT grounds to skip the entire category for the whole report — keep trying
+  the others normally, and only note the specific one(s) that kept failing after a retry.
 - **GetIndividualAnalyticsTool** — tennis: sport="tennis", tour="atp"/"wta" (a big ranking gap is a
   strong signal); golf: sport="golf", league="pga" (leaderboard position only, no head-to-head).
   Pass `opponentName` for tennis to get head-to-head in the same call — it's the only way to get it.

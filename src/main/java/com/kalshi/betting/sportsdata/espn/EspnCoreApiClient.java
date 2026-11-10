@@ -25,10 +25,10 @@ public class EspnCoreApiClient {
     /** First page of the athlete's full match history for the given season (most recent/current
      *  season if omitted), newest first. e.g. sport="tennis", tour="atp"/"wta". */
     public EspnEventLogResponse getAthleteEventLog(String sport, String tour, String athleteId) {
-        return espnCoreRestClient.get()
+        return EspnRetry.call(() -> espnCoreRestClient.get()
                 .uri("/v2/sports/{sport}/leagues/{tour}/athletes/{athleteId}/eventlog", sport, tour, athleteId)
                 .retrieve()
-                .body(EspnEventLogResponse.class);
+                .body(EspnEventLogResponse.class));
     }
 
     /** Resolves a $ref pointer (a full URL) from an {@link EspnEventLogResponse} item to its
@@ -36,9 +36,9 @@ public class EspnCoreApiClient {
     public EspnCompetitionDetail getCompetition(String ref) {
         URI uri = URI.create(ref);
         String pathAndQuery = uri.getRawQuery() == null ? uri.getRawPath() : uri.getRawPath() + "?" + uri.getRawQuery();
-        return espnCoreRestClient.get()
+        return EspnRetry.call(() -> espnCoreRestClient.get()
                 .uri(pathAndQuery)
                 .retrieve()
-                .body(EspnCompetitionDetail.class);
+                .body(EspnCompetitionDetail.class));
     }
 }
