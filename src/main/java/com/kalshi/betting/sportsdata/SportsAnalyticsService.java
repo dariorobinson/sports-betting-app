@@ -7,6 +7,7 @@ import com.kalshi.betting.sportsdata.espn.dto.EspnAthlete;
 import com.kalshi.betting.sportsdata.espn.dto.EspnAthleteGameLogResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnCompetitionDetail;
 import com.kalshi.betting.sportsdata.espn.dto.EspnEventLogResponse;
+import com.kalshi.betting.sportsdata.espn.dto.EspnInjury;
 import com.kalshi.betting.sportsdata.espn.dto.EspnRankingsResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnRosterResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnScheduleResponse;
@@ -222,7 +223,7 @@ public class SportsAnalyticsService {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "No team matching \"" + teamName + "\" found in " + sport + "/" + league));
         EspnRosterResponse roster = espnApiClient.getRoster(sport, league, team.id());
-        EspnAthlete athlete = (roster.athletes() == null ? List.<EspnAthlete>of() : roster.athletes()).stream()
+        EspnAthlete athlete = roster.allAthletes().stream()
                 .filter(a -> matches(a, playerName))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException(
@@ -247,6 +248,28 @@ public class SportsAnalyticsService {
                 .toList();
 
         return new PlayerRecentStats(athlete.bestDisplayName(), games);
+    }
+
+    /** Every rostered player currently listed with a non-empty injury status for one team — e.g.
+     *  sport="football", league="nfl". ESPN embeds current injury status directly on each roster
+     *  entry (no separate injuries endpoint needed); a team with zero listed injuries returns an
+     *  empty list, which is NOT the same as every player being confirmed healthy — see
+     *  {@link TeamInjuryReport}'s javadoc. */
+    public TeamInjuryReport getInjuryReport(String sport, String league, String teamName) {
+        EspnTeam team = findTeam(sport, league, teamName)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No team matching \"" + teamName + "\" found in " + sport + "/" + league));
+        EspnRosterResponse roster = espnApiClient.getRoster(sport, league, team.id());
+
+        List<TeamInjuryReport.PlayerInjury> injuries = roster.allAthletes().stream()
+                .filter(a -> a.injuries() != null && !a.injuries().isEmpty())
+                .map(a -> {
+                    EspnInjury latest = a.injuries().get(0);
+                    return new TeamInjuryReport.PlayerInjury(a.bestDisplayName(), latest.status(), latest.date());
+                })
+                .toList();
+
+        return new TeamInjuryReport(team.displayName(), injuries);
     }
 
     private static Optional<PlayerRecentStats.Game> toPlayerGame(

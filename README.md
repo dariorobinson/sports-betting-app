@@ -127,7 +127,8 @@ Tool classes live in `orchestrator/tool/` — each is a thin adapter (`Supplier<
 annotations for the model-facing schema) over one service method: `GetSportBoardTool` (every game
 line/player prop/game prop for a sport, today only, in one call), `ListSportsTool`, `ListGamesTool`,
 `GetGameTool`, `GetMarketOrderbookTool` (Kalshi market data), `GetTeamAnalyticsTool`,
-`GetIndividualAnalyticsTool`, `GetTeamRecentFormTool`, `GetPlayerRecentStatsTool` (ESPN stats).
+`GetIndividualAnalyticsTool`, `GetTeamRecentFormTool`, `GetPlayerRecentStatsTool`, `GetInjuryReportTool`
+(ESPN stats).
 
 Dependency versions (`com.anthropic:anthropic-java:2.17.0`, `net.dv8tion:JDA:5.3.0`) are matched
 to a proven-working combination rather than latest — JDA in particular has a major version line

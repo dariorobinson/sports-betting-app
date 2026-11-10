@@ -85,7 +85,8 @@ public class OrchestratorService {
             GetTeamAnalyticsTool.class,
             GetIndividualAnalyticsTool.class,
             GetTeamRecentFormTool.class,
-            GetPlayerRecentStatsTool.class);
+            GetPlayerRecentStatsTool.class,
+            GetInjuryReportTool.class);
 
     /** Tool set for the daily value-play scheduler — identical to {@link #TOOL_CLASSES} today, kept as
      *  its own named constant since the two callers (interactive Discord chat vs. the scheduled report)
