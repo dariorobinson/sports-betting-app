@@ -13,8 +13,12 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
 ## How it works
 
 - Every morning (7:30am America/Chicago by default), [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
-  runs one independent research task per sport (CFB, Soccer, NFL, NBA, NCAA Men's Basketball) — each
-  letting Claude pull every game line/player prop/game prop series for that sport in one call
+  runs one independent research task per (sport, market-category) pair — 9 tasks total: game lines
+  and props researched separately for CFB/Soccer/NFL/NBA, plus one for NCAA Men's Basketball (game
+  lines only — no player props exist for that sport on Kalshi). Splitting lines from props, not just
+  splitting by sport, is what actually gets full coverage in one autonomous run instead of requiring
+  manual follow-up chat questions (confirmed in production: one call per sport reliably researched
+  only ONE category, not both). Each task lets Claude pull every relevant market series in one call
   ([`GetSportBoardTool`](src/main/java/com/kalshi/betting/orchestrator/tool/GetSportBoardTool.java),
   backed by the curated [`SportMarketRegistry`](src/main/java/com/kalshi/betting/service/SportMarketRegistry.java)),
   pull real stats from ESPN ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the

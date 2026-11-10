@@ -18,13 +18,15 @@ import java.util.List;
  * real research (ESPN analytics + server-side web search, see {@link OrchestratorService}), so the
  * user can decide and bet manually.
  * <p>
- * Runs one independent {@link OrchestratorService#chatOnce} call per sport (see {@link #SPORT_TASKS})
- * rather than one giant survey across all of them — a single unbounded survey has previously
- * exhausted the whole tool-call budget before producing anything useful (see
- * {@code docs/instructions.md}'s warning about this exact failure mode). Scoping each call to one
- * sport gives it a full iteration budget of its own and keeps each individual research task small
- * enough to actually finish. Every play is same-day only (see {@code docs/instructions.md}) — this
- * is a same-day research tool, not a multi-day/swing-trade one.
+ * Runs one independent {@link OrchestratorService#chatOnce} call per (sport, market-category) task
+ * (see {@link #SPORT_TASKS}) rather than one giant survey across everything, or even one call per
+ * sport — both of those reliably produced only partial coverage in production (a single sport-wide
+ * call would research game lines OR player props, never both, leaving the user to manually ask
+ * follow-up chat questions for the rest, defeating the point of an autonomous scheduled report).
+ * Scoping each call to one narrow (sport, category) slice gives it a full iteration budget of its
+ * own and keeps each individual research task small enough to actually exhaust. Every play is
+ * same-day only (see {@code docs/instructions.md}) — this is a same-day research tool, not a
+ * multi-day/swing-trade one.
  */
 @Component
 public class ValuePlayScheduler {
@@ -32,43 +34,65 @@ public class ValuePlayScheduler {
     private static final Logger log = LoggerFactory.getLogger(ValuePlayScheduler.class);
     private static final String ZONE = "America/Chicago";
 
-    /** One research task per sport. Same-day only (see {@link #VALUE_METHODOLOGY}) means the pool per
-     *  sport is naturally bounded to a single day's slate, so each prompt asks for AS MANY plays as
-     *  genuinely clear the bar rather than a fixed small count — a deeper survey of a smaller (today-
-     *  only) pool is the whole point of going same-day. */
+    /** One research task per (sport, market-category) pair — NOT one task per sport. Bundling every
+     *  market category for a sport into a single prompt (the original design) reliably produced only
+     *  partial coverage in production: asked once for "all NBA markets," the model would research
+     *  just game lines OR just player props, never reliably both, requiring the user to manually ask
+     *  follow-up chat questions to get the rest — exactly the outcome a fully autonomous scheduled
+     *  report should never require. Splitting each sport's game-lines and props into separate tasks
+     *  gives each one its own full tool-iteration budget and a narrow enough scope to actually
+     *  exhaust, the same fix already applied once before at the sport level (see the class javadoc).
+     *  Same-day only (see {@link #VALUE_METHODOLOGY}) means the pool per task is naturally bounded to
+     *  a single day's slate, so each prompt asks for AS MANY plays as genuinely clear the bar rather
+     *  than a fixed small count. */
     private record SportTask(String label, String prompt) {
     }
 
     private static final List<SportTask> SPORT_TASKS = List.of(
-            new SportTask("College Football", """
-                    Call GetSportBoardTool with sport="NCAAF". Evaluate EVERY market group it returns for \
-                    today's games — Moneyline, Spread, Point Total, Team Total, and all the team-level game \
-                    props (touchdowns, rushing yards, receiving yards, sacks, interceptions) — not just \
-                    Moneyline. For any total/team-total/game-prop play, pull both teams' recent scoring \
-                    trend (GetTeamRecentFormTool), not just their season-aggregate record."""),
-            new SportTask("Soccer", """
+            new SportTask("College Football — Game Lines", """
+                    Call GetSportBoardTool with sport="NCAAF". Evaluate EVERY game-line market group it \
+                    returns for today's games — Moneyline, Spread, Point Total, and Team Total — not just \
+                    Moneyline. Pull both teams' recent scoring trend (GetTeamRecentFormTool), not just \
+                    their season-aggregate record."""),
+            new SportTask("College Football — Team Props", """
+                    Call GetSportBoardTool with sport="NCAAF". Evaluate EVERY team-level game-prop market \
+                    group it returns for today's games — team touchdowns, team rushing yards, team \
+                    receiving yards, team sacks, team interceptions (no individual player props exist for \
+                    this sport on Kalshi). Pull both teams' recent scoring/stat trend \
+                    (GetTeamRecentFormTool) to back each one, not just their season-aggregate record."""),
+            new SportTask("Soccer — Game Lines", """
                     Call GetSportBoardTool with sport="SOCCER" (all 6 leagues in one call). Evaluate EVERY \
-                    market group for today's games — Moneyline, Spread, Point Total, Team Total, Anytime \
-                    Goalscorer, and Both Teams to Score — not just one market type. Apply extra scrutiny to \
-                    Moneyline specifically (soccer's draw outcome makes it a structurally weaker fit than a \
-                    clean over/under or goalscorer line), but don't skip it outright if the data shows a \
-                    real gap. Pull recent form (GetTeamRecentFormTool) and head-to-head for both teams."""),
-            new SportTask("NFL", """
-                    Call GetSportBoardTool with sport="NFL". Evaluate EVERY market group it returns for \
-                    today's games — Moneyline, Spread, Point Total, Team Total, and all the player props \
-                    (passing yards, rushing yards, receptions, receiving yards, passing touchdowns) — not \
-                    just Moneyline. Back game lines with standings/head-to-head/recent form \
-                    (GetTeamAnalyticsTool + GetTeamRecentFormTool); back every player prop with \
-                    GetPlayerRecentStatsTool — do not recommend a player prop you haven't pulled recent \
-                    game logs for."""),
-            new SportTask("NBA", """
-                    Call GetSportBoardTool with sport="NBA". Evaluate EVERY market group it returns for \
-                    today's games — Moneyline, Spread, Point Total, Team Total, and all the player props \
-                    (points, rebounds, assists, steals, blocks, threes made) — not just Moneyline or just \
-                    props. Back game lines with GetTeamAnalyticsTool/GetTeamRecentFormTool; back every \
-                    player prop with GetPlayerRecentStatsTool for that player's last ~10 games — state \
-                    plainly how many actually cleared the specific threshold Kalshi is pricing. Do not \
-                    recommend a player prop you haven't pulled recent game logs for."""),
+                    game-line market group for today's games — Moneyline, Spread, Point Total, and Team \
+                    Total — not just one market type. Apply extra scrutiny to Moneyline specifically \
+                    (soccer's draw outcome makes it a structurally weaker fit than a clean over/under \
+                    line), but don't skip it outright if the data shows a real gap. Pull recent form \
+                    (GetTeamRecentFormTool) and head-to-head for both teams."""),
+            new SportTask("Soccer — Player/Game Props", """
+                    Call GetSportBoardTool with sport="SOCCER" (all 6 leagues in one call). Evaluate EVERY \
+                    Anytime Goalscorer and Both Teams to Score market group for today's games across all 6 \
+                    leagues. Back goalscorer props with the player's recent scoring form; back Both Teams \
+                    to Score with both teams' recent scoring/conceding trend (GetTeamRecentFormTool)."""),
+            new SportTask("NFL — Game Lines", """
+                    Call GetSportBoardTool with sport="NFL". Evaluate EVERY game-line market group it \
+                    returns for today's games — Moneyline, Spread, Point Total, and Team Total — not just \
+                    Moneyline. Back every play with standings/head-to-head/recent form \
+                    (GetTeamAnalyticsTool + GetTeamRecentFormTool)."""),
+            new SportTask("NFL — Player Props", """
+                    Call GetSportBoardTool with sport="NFL". Evaluate EVERY player-prop market group it \
+                    returns for today's games — passing yards, rushing yards, receptions, receiving yards, \
+                    passing touchdowns. Back every single player prop with GetPlayerRecentStatsTool for \
+                    that player's last ~10 games — do not recommend a player prop you haven't pulled \
+                    recent game logs for."""),
+            new SportTask("NBA — Game Lines", """
+                    Call GetSportBoardTool with sport="NBA". Evaluate EVERY game-line market group it \
+                    returns for today's games — Moneyline, Spread, Point Total, and Team Total — not just \
+                    Moneyline. Back every play with GetTeamAnalyticsTool/GetTeamRecentFormTool."""),
+            new SportTask("NBA — Player Props", """
+                    Call GetSportBoardTool with sport="NBA". Evaluate EVERY player-prop market group it \
+                    returns for today's games — points, rebounds, assists, steals, blocks, threes made. \
+                    Back every single player prop with GetPlayerRecentStatsTool for that player's last ~10 \
+                    games — state plainly how many actually cleared the specific threshold Kalshi is \
+                    pricing. Do not recommend a player prop you haven't pulled recent game logs for."""),
             new SportTask("NCAA Men's Basketball", """
                     Call GetSportBoardTool with sport="NCAAMB". Evaluate EVERY market group it returns for \
                     today's games — Moneyline, Spread, Point Total, and Team Total (no individual player \
@@ -105,7 +129,8 @@ public class ValuePlayScheduler {
         execute();
     }
 
-    /** Runs the full 4-sport research cycle and DMs the combined report; also returns the report text
+    /** Runs the full research cycle (every task in {@link #SPORT_TASKS}) and DMs the combined
+     *  report; also returns the report text
      *  so a manual trigger (see {@code ValuePlayController}) can show the result directly. */
     public String execute() {
         JDA jda = jdaProvider.getIfAvailable();
