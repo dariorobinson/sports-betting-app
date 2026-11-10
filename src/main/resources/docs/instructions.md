@@ -125,9 +125,14 @@ aren't obvious from the schema:
   the specific games that pass are promising on and you want the full picture for before committing
   to a play. Same sport/league slugs as GetTeamAnalyticsTool.
 - **GetPlayerRecentStatsTool** — a player's last N game box-score lines (points/rebounds/assists
-  etc., labeled by ESPN's own stat names). Mandatory before recommending ANY player prop — state the
-  player's actual hit-rate against the specific threshold Kalshi is pricing, not just a vague "he's
-  been playing well." Needs the player's current team name to resolve their roster.
+  etc., labeled by ESPN's own stat names). **`GetSportBoardTool`'s `playerRecentStats` already covers
+  this for EVERY player with an active prop today — check there FIRST.** Only call this tool
+  one-at-a-time for a specific player that bulk list didn't resolve (an unmatched name, a prop
+  category outside the bulk sports, etc.). Either way, a real stats check — bulk or individual — is
+  mandatory before recommending ANY player prop: state the player's actual hit-rate against the
+  specific threshold Kalshi is pricing, not just a vague "he's been playing well," and don't recommend
+  a prop for a player you skipped checking. Checking just 2-3 recognizable stars and ignoring the rest
+  of the board is exactly the failure this bulk data exists to prevent.
 - **GetInjuryReportTool** — mandatory for both teams before finalizing any play you're seriously
   close to recommending (see above). Status vocabulary is ESPN's own (Out, Doubtful, Questionable,
   Injured Reserve, Day-To-Day). An empty result is NOT confirmation everyone's healthy — college

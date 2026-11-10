@@ -2,6 +2,7 @@ package com.kalshi.betting.service;
 
 import com.kalshi.betting.client.KalshiApiClient;
 import com.kalshi.betting.client.dto.EventData;
+import com.kalshi.betting.sportsdata.PlayerRecentStats;
 import com.kalshi.betting.sportsdata.SportsAnalyticsService;
 import com.kalshi.betting.sportsdata.TeamScoringTrend;
 import com.kalshi.betting.web.dto.CompactMarket;
@@ -16,8 +17,10 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 
 /** Browsing surface over Kalshi's sports series/events/markets/orderbook — all read-only, no auth required by Kalshi. */
@@ -35,6 +38,14 @@ public class SportsCatalogService {
      *  team — smaller than {@code SportsAnalyticsService.DEFAULT_RECENT_GAMES} since this gets
      *  multiplied across every team in a sport's whole slate (up to 180+ on a busy CFB Saturday). */
     private static final int BOARD_TREND_LOOKBACK_GAMES = 5;
+    /** How many recent games {@link #getSportBoard}'s bulk player-prop stats fetch pulls per player —
+     *  the full default (not the lighter team-trend sample), since "X of his last 10 games" hit-rate
+     *  framing needs the full window. */
+    private static final int BOARD_PLAYER_LOOKBACK_GAMES = 10;
+    /** Safety ceiling on how many distinct players {@link #getSportBoard} will bulk-fetch stats for
+     *  in one call — not expected to bind in practice, just a defensive bound against a pathological
+     *  slate size. */
+    private static final int BOARD_MAX_PLAYER_LOOKUPS = 150;
 
     private final KalshiApiClient client;
     private final SportsAnalyticsService sportsAnalyticsService;
@@ -117,24 +128,33 @@ public class SportsCatalogService {
 
         List<SportBoard.MarketGroup> groups = fetched.stream().map(FetchedGroup::group).toList();
         List<TeamLookup> teamLookups = fetched.stream().flatMap(f -> f.teamLookups().stream()).toList();
+        List<PlayerLookup> playerLookups = fetched.stream().flatMap(f -> f.playerLookups().stream()).toList();
         List<TeamScoringTrend> trends = fetchTeamScoringTrends(teamLookups);
+        List<PlayerRecentStats> playerStats = fetchPlayerRecentStatsBulk(teamLookups, playerLookups);
 
-        return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups, trends);
+        return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups, trends, playerStats);
     }
 
     private record TeamLookup(String espnSport, String espnLeague, String teamName) {
     }
 
-    private record FetchedGroup(SportBoard.MarketGroup group, List<TeamLookup> teamLookups) {
+    private record PlayerLookup(String espnSport, String espnLeague, String playerName) {
+    }
+
+    private record FetchedGroup(SportBoard.MarketGroup group, List<TeamLookup> teamLookups,
+                                 List<PlayerLookup> playerLookups) {
     }
 
     /**
      * Fetches one series' games (already same-day-filtered via {@link #listGames}), trims each
      * market down to its {@link CompactMarket} view (dropping American odds and the always-redundant
      * "no" side — see that record's javadoc; only inactive/settled markets are dropped entirely, no
-     * game is ever dropped), and — if this is a Moneyline series (ticker ends in "GAME") — also
-     * collects every team name playing today for {@link #fetchTeamScoringTrends}, in the same pass
-     * over the same fetch rather than a second HTTP call per series.
+     * game is ever dropped), and collects whatever bulk-lookup hints this series can offer in the
+     * same pass (no second HTTP call per series): team names playing today if this is a Moneyline
+     * series (ticker ends in "GAME"), for {@link #fetchTeamScoringTrends}; player names if this is a
+     * player-prop series, for {@link #fetchPlayerRecentStatsBulk} — Kalshi labels a player-prop
+     * market "{Player Name}: {threshold}+" consistently (confirmed live for NFL and NBA), so the name
+     * is just everything before the first ": ".
      */
     private FetchedGroup fetchMarketGroup(SportMarketRegistry.SeriesEntry entry) {
         List<GameSummary> rawGames;
@@ -144,14 +164,14 @@ public class SportsCatalogService {
             log.warn("Sport board: fetching {} ({}) failed: {}",
                     entry.seriesTicker(), entry.marketType(), e.getMessage());
             return new FetchedGroup(
-                    new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(), List.of()), List.of());
+                    new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(), List.of()), List.of(), List.of());
         }
 
-        List<TeamLookup> lookups = new ArrayList<>();
+        List<TeamLookup> teamLookups = new ArrayList<>();
         if (entry.seriesTicker().endsWith("GAME") && entry.espnSport() != null) {
             for (GameSummary game : rawGames) {
                 for (String team : splitTeams(game.title())) {
-                    lookups.add(new TeamLookup(entry.espnSport(), entry.espnLeague(), team));
+                    teamLookups.add(new TeamLookup(entry.espnSport(), entry.espnLeague(), team));
                 }
             }
         }
@@ -164,8 +184,31 @@ public class SportsCatalogService {
                                 .toList()))
                 .toList();
 
+        List<PlayerLookup> playerLookups = new ArrayList<>();
+        if (entry.marketType().contains("(player prop)") && entry.espnSport() != null) {
+            for (SportBoard.CompactGame game : compactGames) {
+                for (CompactMarket m : game.markets()) {
+                    String playerName = extractPlayerName(m.label());
+                    if (playerName != null) {
+                        playerLookups.add(new PlayerLookup(entry.espnSport(), entry.espnLeague(), playerName));
+                    }
+                }
+            }
+        }
+
         return new FetchedGroup(
-                new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(), compactGames), lookups);
+                new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(), compactGames),
+                teamLookups, playerLookups);
+    }
+
+    /** Kalshi labels a player-prop market "{Player Name}: {threshold}+" (e.g. "Karl-Anthony Towns:
+     *  25+", "Trevor Lawrence: 275+") — everything before the first ": " is the player's name. Null
+     *  if the label doesn't match that shape. */
+    private static String extractPlayerName(String label) {
+        if (label == null || !label.contains(": ")) {
+            return null;
+        }
+        return label.split(": ", 2)[0].trim();
     }
 
     /**
@@ -193,6 +236,51 @@ public class SportsCatalogService {
                 })
                 .filter(Objects::nonNull)
                 .toList();
+    }
+
+    /**
+     * Bulk-fetches recent game-log stats for every distinct player named in a player-prop market
+     * label today — so the model's prop research actually covers the whole slate instead of whichever
+     * few players it happens to already recognize (confirmed in production: asked to find player prop
+     * plays, it checked 2-3 recognizable stars and stopped, even though dozens more had active props).
+     * Grouped by (sport, league) since a combined key like "SOCCER" spans 6 different ESPN league
+     * codes, each needing its own roster pool to resolve against — see
+     * {@link SportsAnalyticsService#getPlayerRecentStatsBulk}.
+     */
+    private List<PlayerRecentStats> fetchPlayerRecentStatsBulk(List<TeamLookup> teamLookups,
+                                                                List<PlayerLookup> playerLookups) {
+        if (playerLookups.isEmpty()) {
+            return List.of();
+        }
+        Map<String, List<String>> teamNamesByLeague = new LinkedHashMap<>();
+        for (TeamLookup t : teamLookups) {
+            teamNamesByLeague.computeIfAbsent(t.espnSport() + "|" + t.espnLeague(), k -> new ArrayList<>())
+                    .add(t.teamName());
+        }
+        Map<String, List<String>> playerNamesByLeague = new LinkedHashMap<>();
+        for (PlayerLookup p : playerLookups) {
+            List<String> names = playerNamesByLeague.computeIfAbsent(
+                    p.espnSport() + "|" + p.espnLeague(), k -> new ArrayList<>());
+            if (!names.contains(p.playerName()) && names.size() < BOARD_MAX_PLAYER_LOOKUPS) {
+                names.add(p.playerName());
+            }
+        }
+
+        List<PlayerRecentStats> result = new ArrayList<>();
+        for (Map.Entry<String, List<String>> entry : playerNamesByLeague.entrySet()) {
+            String[] sportLeague = entry.getKey().split("\\|", 2);
+            List<String> teamNames = teamNamesByLeague.getOrDefault(entry.getKey(), List.of());
+            if (teamNames.isEmpty()) {
+                continue;
+            }
+            try {
+                result.addAll(sportsAnalyticsService.getPlayerRecentStatsBulk(
+                        sportLeague[0], sportLeague[1], teamNames, entry.getValue(), BOARD_PLAYER_LOOKBACK_GAMES));
+            } catch (RuntimeException e) {
+                log.warn("Sport board: bulk player stats for {} failed: {}", entry.getKey(), e.getMessage());
+            }
+        }
+        return result;
     }
 
     /** Kalshi's event {@code title} is consistently "{Team A} vs {Team B}" across every sport this

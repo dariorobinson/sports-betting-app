@@ -15,6 +15,8 @@ import com.kalshi.betting.sportsdata.espn.dto.EspnScoreboardResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnStandingsResponse;
 import com.kalshi.betting.sportsdata.espn.dto.EspnTeam;
 import com.kalshi.betting.sportsdata.espn.dto.EspnTeamsResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -35,6 +37,8 @@ import java.util.function.Function;
  */
 @Service
 public class SportsAnalyticsService {
+
+    private static final Logger log = LoggerFactory.getLogger(SportsAnalyticsService.class);
 
     /** How many of the athlete's most recent played matches to check for a head-to-head — bounds
      *  the number of ESPN calls (one per match, fetched concurrently) to a reasonable amount. */
@@ -229,6 +233,70 @@ public class SportsAnalyticsService {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "No player matching \"" + playerName + "\" found on " + team.displayName() + "'s roster"));
 
+        return buildPlayerRecentStats(sport, league, athlete, lastN);
+    }
+
+    /**
+     * Bulk version of {@link #getPlayerRecentStats} — resolves every one of {@code playerNames}
+     * against the combined rosters of {@code candidateTeamNames} (every team playing in this sport
+     * today) and fetches each match's recent game log in parallel. Exists so a bulk caller (see
+     * {@code SportsCatalogService#getSportBoard}) can cover EVERY player with an active Kalshi prop
+     * market in one tool call: asking the model to request {@code GetPlayerRecentStatsTool} once per
+     * player doesn't scale — a busy NBA slate can have 40-80 distinct players with active props,
+     * confirmed in production to result in the model checking just 2-3 recognizable stars and
+     * stopping rather than working through the full list. A player name that can't be matched to any
+     * of today's rosters is silently skipped (expected — not every prop label will match cleanly),
+     * not an error.
+     */
+    public List<PlayerRecentStats> getPlayerRecentStatsBulk(String sport, String league,
+            List<String> candidateTeamNames, List<String> playerNames, int lastN) {
+        EspnTeamsResponse response = espnApiClient.listTeams(sport, league);
+        List<EspnTeam> allTeams = response.sports().stream()
+                .flatMap(s -> s.leagues().stream())
+                .flatMap(l -> l.teams().stream())
+                .map(EspnTeamsResponse.TeamWrapper::team)
+                .toList();
+
+        List<EspnTeam> matchedTeams = candidateTeamNames.stream().distinct()
+                .map(name -> bestMatch(allTeams, Function.identity(), name))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .toList();
+
+        List<EspnAthlete> rosterPool = matchedTeams.parallelStream()
+                .flatMap(team -> {
+                    try {
+                        return espnApiClient.getRoster(sport, league, team.id()).allAthletes().stream();
+                    } catch (RuntimeException e) {
+                        log.warn("Player stats bulk: roster fetch for {} failed: {}",
+                                team.displayName(), e.getMessage());
+                        return java.util.stream.Stream.<EspnAthlete>empty();
+                    }
+                })
+                .toList();
+
+        List<EspnAthlete> matchedAthletes = playerNames.stream().distinct()
+                .map(name -> rosterPool.stream().filter(a -> matches(a, name)).findFirst())
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .distinct()
+                .toList();
+
+        return matchedAthletes.parallelStream()
+                .map(athlete -> {
+                    try {
+                        return buildPlayerRecentStats(sport, league, athlete, lastN);
+                    } catch (RuntimeException e) {
+                        log.warn("Player stats bulk: game log fetch for {} failed: {}",
+                                athlete.bestDisplayName(), e.getMessage());
+                        return null;
+                    }
+                })
+                .filter(java.util.Objects::nonNull)
+                .toList();
+    }
+
+    private PlayerRecentStats buildPlayerRecentStats(String sport, String league, EspnAthlete athlete, int lastN) {
         EspnAthleteGameLogResponse log = espnWebApiClient.getAthleteGameLog(sport, league, athlete.id());
         List<String> labels = log.labels() == null ? List.of() : log.labels();
         Map<String, EspnAthleteGameLogResponse.GameMeta> eventsById =
