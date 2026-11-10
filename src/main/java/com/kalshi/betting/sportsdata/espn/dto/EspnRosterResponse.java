@@ -23,8 +23,15 @@ public record EspnRosterResponse(List<Entry> athletes) {
             // Present when `athletes` is a flat list of real athlete objects.
             String id, String firstName, String lastName, String displayName, String fullName,
             String shortName, List<EspnInjury> injuries,
-            // Present when `athletes` is grouped by position instead — only `items` is used.
-            String position, List<EspnAthlete> items
+            // Present when `athletes` is grouped by position instead — only `items` is used. NOTE:
+            // deliberately NOT also declaring a `position` field here — a flat athlete object ALSO
+            // has a key named "position", but as an OBJECT ({id, name, displayName, abbreviation,
+            // ...}), not the plain string label the grouped wrapper uses that key for. Declaring it
+            // as String crashed Jackson on every flat-shape roster (confirmed in production:
+            // MismatchedInputException, "Cannot deserialize value of type String from Object
+            // value" at athletes[0]["position"]) — we never actually read this value, so just don't
+            // map it at all and let @JsonIgnoreProperties ignore it in both shapes regardless of type.
+            List<EspnAthlete> items
     ) {
         /** This entry as however many real athletes it actually represents — one, if this is the
          *  flat shape and {@code id} is populated; whichever are in {@code items}, if this is the
