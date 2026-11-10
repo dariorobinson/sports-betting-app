@@ -26,8 +26,11 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
   same-day research tool, not a swing-trade one). The combined report is DMed to one pre-authorized
   Discord user. Nothing is ever placed — see [`docs/instructions.md`](src/main/resources/docs/instructions.md)
   for the exact methodology/format the model follows.
-- You can also just DM the bot directly any time ("find me some value plays in the NBA tonight",
-  "what's Kalshi pricing the Chiefs game at") via the same Discord bot (see below).
+- You can also just DM the bot directly any time — a scoped request ("find me some value plays in
+  the NBA tonight", "what's Kalshi pricing the Chiefs game at") is researched inline in that one
+  chat turn; a genuinely unscoped "give me every possible play today" triggers the same 9-task cycle
+  as the scheduled report on demand (`RunFullSlateResearchTool`), since one chat turn can't reliably
+  research every sport and category itself — see `docs/instructions.md` for the exact routing rule.
 - **Auth**: Kalshi requires every private-endpoint request (order books, settlement history) to
   carry three headers — `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-TIMESTAMP`, `KALSHI-ACCESS-SIGNATURE` —
   where the signature is an RSA-PSS (SHA-256) signature over `timestamp + HTTP_METHOD + request_path`,

@@ -14,11 +14,13 @@ import com.anthropic.models.beta.messages.BetaUsage;
 import com.anthropic.models.beta.messages.BetaWebSearchTool20260209;
 import com.anthropic.models.beta.messages.MessageCreateParams;
 import com.kalshi.betting.orchestrator.tool.*;
+import com.kalshi.betting.scheduler.ValuePlayScheduler;
 import com.kalshi.betting.service.SportsCatalogService;
 import com.kalshi.betting.sportsdata.SportsAnalyticsService;
 import jakarta.validation.Validator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
@@ -76,7 +78,11 @@ public class OrchestratorService {
      *  and adds resilience when a single turn emits many tool-result blocks. */
     private static final int SLIDING_BREAKPOINTS = 2;
 
-    private static final List<Class<?>> TOOL_CLASSES = List.of(
+    /** Tool set for the daily value-play scheduler's 9 per-(sport, category) research tasks (see
+     *  {@code ValuePlayScheduler}) — deliberately does NOT include {@link RunFullSlateResearchTool},
+     *  which itself runs this exact same set of tasks; including it here would let a sub-task
+     *  recursively re-trigger the whole cycle. */
+    public static final List<Class<?>> VALUE_PLAY_TOOL_CLASSES = List.of(
             GetSportBoardTool.class,
             ListSportsTool.class,
             ListGamesTool.class,
@@ -88,10 +94,15 @@ public class OrchestratorService {
             GetPlayerRecentStatsTool.class,
             GetInjuryReportTool.class);
 
-    /** Tool set for the daily value-play scheduler — identical to {@link #TOOL_CLASSES} today, kept as
-     *  its own named constant since the two callers (interactive Discord chat vs. the scheduled report)
-     *  are conceptually independent and have diverged before (see git history) and may again. */
-    public static final List<Class<?>> VALUE_PLAY_TOOL_CLASSES = TOOL_CLASSES;
+    /** Tool set for interactive Discord chat — everything in {@link #VALUE_PLAY_TOOL_CLASSES} plus
+     *  {@link RunFullSlateResearchTool}, which a chat turn (but never a scheduled sub-task — see
+     *  above) can use for a genuinely unscoped "give me every possible play" request. */
+    private static final List<Class<?>> TOOL_CLASSES;
+    static {
+        List<Class<?>> all = new ArrayList<>(VALUE_PLAY_TOOL_CLASSES);
+        all.add(RunFullSlateResearchTool.class);
+        TOOL_CLASSES = List.copyOf(all);
+    }
 
     private final AnthropicClient client;
     private final String systemPromptTemplate;
@@ -114,10 +125,12 @@ public class OrchestratorService {
     public OrchestratorService(AnthropicClient client,
                                 SportsCatalogService sportsCatalogService,
                                 SportsAnalyticsService sportsAnalyticsService,
+                                ObjectProvider<ValuePlayScheduler> valuePlaySchedulerProvider,
                                 Validator validator) {
         this.client = client;
         ToolServices.sportsCatalogService = sportsCatalogService;
         ToolServices.sportsAnalyticsService = sportsAnalyticsService;
+        ToolServices.valuePlayScheduler = valuePlaySchedulerProvider;
         ToolServices.validator = validator;
         this.systemPromptTemplate = loadInstructions();
         for (Class<?> toolClass : TOOL_CLASSES) {

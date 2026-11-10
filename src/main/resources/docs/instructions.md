@@ -63,9 +63,27 @@ earlier in this conversation (or a previous day) are NOT a cache to reuse: today
 may not match the date on an earlier result's games, and the data itself can simply be stale/moved
 on. If you did not call the tool in THIS turn, you cannot present its old results as current.
 
-## Start every "find me plays" request with GetSportBoardTool
+## Scoped request vs. "give me everything" — pick the right path
 
-**`GetSportBoardTool` is mandatory, not optional, for any "find me plays in <sport>" request.** One
+A request that names a specific sport, league, team, or market category ("NBA plays", "player props",
+"what about the Lakers tonight") is a SCOPED request — research it yourself directly with
+`GetSportBoardTool` and the rest of the tools below, exactly as described in this document. That's
+still the right path for anything with a stated scope, no matter how it's phrased.
+
+A request with NO scope at all — asking for every possible play across every sport today ("give me
+all possible plays," "what's good today," "send me everything") — is different: call
+`RunFullSlateResearchTool` instead of trying to research every sport and category yourself in this
+turn. A single turn cannot reliably do that — confirmed in production, asked for "everything," one
+attempt actually researched only NBA player props and gave every other sport/category a token pass
+before concluding "no plays," even though real plays existed elsewhere. `RunFullSlateResearchTool`
+runs the same 9-pass research cycle as the daily scheduled report (one fully-resourced pass per sport
+AND per market category) and returns the complete, already-correctly-formatted report — takes several
+minutes, which is expected; present its result back to the user essentially as-is, don't re-research
+or rewrite it.
+
+## Start every scoped "find me plays" request with GetSportBoardTool
+
+**`GetSportBoardTool` is mandatory, not optional, for any scoped "find me plays in <sport>" request.** One
 call with `sport` set to NFL/NCAAF/NBA/NCAAMB/EPL/LALIGA/BUNDESLIGA/SERIEA/LIGUE1/MLS/SOCCER returns
 EVERY game line (Moneyline, Spread, Point Total, Team Total), player prop, and game prop series for
 that sport, today only, already same-day filtered — see each market group's label in the response
@@ -105,7 +123,11 @@ it directly — both still work exactly as before.
 Each tool's purpose is in its own schema description; these are the extra behavioral rules that
 aren't obvious from the schema:
 
-- **GetSportBoardTool** — see above; this is the primary discovery tool for play-finding requests.
+- **GetSportBoardTool** — see above; this is the primary discovery tool for SCOPED play-finding requests.
+- **RunFullSlateResearchTool** — see above; only for a genuinely unscoped "give me everything" request.
+  Call it once, wait for the (multi-minute) result, and present it close to verbatim — don't ALSO run
+  your own GetSportBoardTool research in the same turn, and don't summarize its output down to a
+  shorter list than what it actually found.
 - **GetGameTool** — don't loop it over every game in a series to "check" each one; GetSportBoardTool/
   ListGamesTool already return a price for every game in one call. Use GetGameTool for the handful
   you're seriously considering after narrowing down, AND as the required last step before reporting

@@ -130,8 +130,11 @@ public class ValuePlayScheduler {
     }
 
     /** Runs the full research cycle (every task in {@link #SPORT_TASKS}) and DMs the combined
-     *  report; also returns the report text
-     *  so a manual trigger (see {@code ValuePlayController}) can show the result directly. */
+     *  report; also returns the report text so a manual trigger (see {@code ValuePlayController})
+     *  can show the result directly. For an on-demand run triggered FROM a Discord chat turn (see
+     *  {@code RunFullSlateResearchTool}), call {@link #runResearch()} instead — that variant doesn't
+     *  DM the result itself, since the normal chat response path already delivers it, and calling
+     *  both would deliver the same report twice. */
     public String execute() {
         JDA jda = jdaProvider.getIfAvailable();
         if (jda == null) {
@@ -143,6 +146,20 @@ public class ValuePlayScheduler {
             return "Skipped: DISCORD_AUTHORIZED_USER_ID is not set.";
         }
 
+        String message = runResearch();
+        notifyUser(jda, message);
+        return message;
+    }
+
+    /**
+     * The actual research cycle — every task in {@link #SPORT_TASKS} run independently, combined into
+     * one report — with NO side effect (no Discord DM). Exists as its own method specifically so a
+     * tool-triggered on-demand run (see {@code RunFullSlateResearchTool}) can get the report text back
+     * as a normal tool result and let the already-in-progress chat turn deliver it once, rather than
+     * this method ALSO pushing a separate DM (which {@link #execute()} does, for the cases where
+     * there's no live chat turn to deliver through — the cron and the manual REST trigger).
+     */
+    public String runResearch() {
         StringBuilder report = new StringBuilder("Today's value plays\n");
         for (SportTask task : SPORT_TASKS) {
             log.info("Value-play research starting for {}", task.label());
@@ -157,10 +174,7 @@ public class ValuePlayScheduler {
             log.info("Value-play research finished for {}: {} chars", task.label(), result.length());
             report.append("\n").append(task.label()).append("\n").append(result).append("\n");
         }
-
-        String message = report.toString();
-        notifyUser(jda, message);
-        return message;
+        return report.toString();
     }
 
     private void notifyUser(JDA jda, String message) {

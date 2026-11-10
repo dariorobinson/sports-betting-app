@@ -5,9 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.kalshi.betting.scheduler.ValuePlayScheduler;
 import com.kalshi.betting.service.SportsCatalogService;
 import com.kalshi.betting.sportsdata.SportsAnalyticsService;
 import jakarta.validation.Validator;
+import org.springframework.beans.factory.ObjectProvider;
 
 /**
  * Static holder giving orchestrator tool classes access to the app's services. Tool classes are
@@ -36,6 +38,11 @@ public class ToolServices {
     public static SportsCatalogService sportsCatalogService;
     public static SportsAnalyticsService sportsAnalyticsService;
     public static Validator validator;
+    /** A provider, not the resolved bean directly — {@code ValuePlayScheduler} itself depends on
+     *  {@code OrchestratorService} (to run each of its research tasks), so resolving this eagerly in
+     *  {@code OrchestratorService}'s constructor would be a circular bean dependency. Deferring
+     *  resolution to actual tool-invocation time (long after both beans exist) avoids that entirely. */
+    public static ObjectProvider<ValuePlayScheduler> valuePlayScheduler;
 
     private ToolServices() {
     }
