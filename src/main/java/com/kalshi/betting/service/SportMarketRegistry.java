@@ -37,6 +37,7 @@ final class SportMarketRegistry {
             new String[]{"NCAAF", "football", "college-football"},
             new String[]{"NBA", "basketball", "nba"},
             new String[]{"NCAAMB", "basketball", "mens-college-basketball"},
+            new String[]{"NHL", "hockey", "nhl"},
             new String[]{"EPL", "soccer", "eng.1"},
             new String[]{"LALIGA", "soccer", "esp.1"},
             new String[]{"BUNDESLIGA", "soccer", "ger.1"},
@@ -97,6 +98,13 @@ final class SportMarketRegistry {
                 case "NCAAMB" -> {
                     // game lines only — no individual player props exist for this sport on Kalshi
                 }
+                case "NHL" -> entries.addAll(List.of(
+                        new SeriesEntry("Goals (player prop)", "KXNHLGOAL", espnSport, espnLeague),
+                        new SeriesEntry("Points (player prop)", "KXNHLPTS", espnSport, espnLeague),
+                        new SeriesEntry("Assists (player prop)", "KXNHLAST", espnSport, espnLeague),
+                        new SeriesEntry("Goaltender Saves (player prop)", "KXNHLSAVE", espnSport, espnLeague),
+                        new SeriesEntry("First Goalscorer (player prop)", "KXNHLFIRSTGOAL", espnSport, espnLeague),
+                        new SeriesEntry("Goal in First 10 Minutes (game prop)", "KXNHLF10G", espnSport, espnLeague)));
                 default -> {
                     if (isSoccer) {
                         entries.add(new SeriesEntry(key + " Anytime Goalscorer (player prop)",

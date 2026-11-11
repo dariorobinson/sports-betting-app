@@ -201,14 +201,16 @@ public class SportsCatalogService {
                 teamLookups, playerLookups);
     }
 
-    /** Kalshi labels a player-prop market "{Player Name}: {threshold}+" (e.g. "Karl-Anthony Towns:
-     *  25+", "Trevor Lawrence: 275+") — everything before the first ": " is the player's name. Null
-     *  if the label doesn't match that shape. */
+    /** Kalshi labels most player-prop markets "{Player Name}: {threshold}+" (e.g. "Karl-Anthony
+     *  Towns: 25+", "Trevor Lawrence: 275+") — everything before the first ": " is the player's
+     *  name. Some (confirmed: NHL's "First Goalscorer" market) instead label it as JUST the bare
+     *  player name with no threshold suffix at all — in that case the whole label IS the name. */
     private static String extractPlayerName(String label) {
-        if (label == null || !label.contains(": ")) {
+        if (label == null || label.isBlank()) {
             return null;
         }
-        return label.split(": ", 2)[0].trim();
+        int colon = label.indexOf(": ");
+        return (colon >= 0 ? label.substring(0, colon) : label).trim();
     }
 
     /**

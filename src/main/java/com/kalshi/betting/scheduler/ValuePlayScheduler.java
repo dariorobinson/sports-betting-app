@@ -99,7 +99,19 @@ public class ValuePlayScheduler {
                     props exist for this sport on Kalshi). Back every play with recent scoring form \
                     (GetTeamRecentFormTool, ESPN league slug "mens-college-basketball") — early season \
                     means limited sample sizes, so say so plainly when a team's recent-form read is thin \
-                    rather than overstating confidence.""")
+                    rather than overstating confidence."""),
+            new SportTask("NHL — Game Lines", """
+                    Call GetSportBoardTool with sport="NHL". Evaluate EVERY game-line market group it \
+                    returns for today's games — Moneyline, Spread, Point Total (goals), and Team Total — \
+                    not just Moneyline. Back every play with standings/head-to-head/recent scoring trend \
+                    (GetTeamAnalyticsTool + GetTeamRecentFormTool, ESPN sport="hockey", league="nhl")."""),
+            new SportTask("NHL — Player/Game Props", """
+                    Call GetSportBoardTool with sport="NHL". Evaluate EVERY player-prop market group it \
+                    returns for today's games — goals, points, assists, goaltender saves, first \
+                    goalscorer — plus the "Goal in First 10 Minutes" game prop. Back every single player \
+                    prop with GetPlayerRecentStatsTool for that player's last ~10 games (goaltenders too, \
+                    for saves) — do not recommend a player prop you haven't pulled recent game logs for. \
+                    Back the first-10-minutes game prop with both teams' recent scoring trend.""")
     );
 
     /** Shared instruction appended to every sport task. Same-day-only and output-brevity rules already

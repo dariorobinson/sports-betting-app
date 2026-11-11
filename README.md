@@ -3,7 +3,7 @@
 A Spring Boot app that researches sports betting value on Kalshi and reports it — it does **not**
 place, cancel, or modify any bet. It compares real statistics (ESPN + web search) against Kalshi's
 live market prices to find plays where the data suggests a meaningfully better true probability than
-Kalshi's price implies, across College Football, Soccer, NFL, NBA, and NCAA Men's Basketball —
+Kalshi's price implies, across College Football, Soccer, NFL, NBA, NCAA Men's Basketball, and NHL —
 Moneyline, Spread, Point Total, Team Total, player props, and game props, not just moneyline. Built
 against Kalshi's Trade API v2 (`openapi.yaml` in this repo) for **market data only** — browsing
 series, events, markets, and order books, all public/read-only endpoints.
@@ -13,8 +13,8 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
 ## How it works
 
 - Every morning (7:30am America/Chicago by default), [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
-  runs one independent research task per (sport, market-category) pair — 9 tasks total: game lines
-  and props researched separately for CFB/Soccer/NFL/NBA, plus one for NCAA Men's Basketball (game
+  runs one independent research task per (sport, market-category) pair — 11 tasks total: game lines
+  and props researched separately for CFB/Soccer/NFL/NBA/NHL, plus one for NCAA Men's Basketball (game
   lines only — no player props exist for that sport on Kalshi). Splitting lines from props, not just
   splitting by sport, is what actually gets full coverage in one autonomous run instead of requiring
   manual follow-up chat questions (confirmed in production: one call per sport reliably researched

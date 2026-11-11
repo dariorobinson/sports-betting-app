@@ -33,7 +33,7 @@ public class GetSportBoardTool implements Supplier<String> {
 
     private static final Logger log = LoggerFactory.getLogger(GetSportBoardTool.class);
 
-    @JsonPropertyDescription("One of: NFL, NCAAF, NBA, NCAAMB, EPL, LALIGA, BUNDESLIGA, SERIEA, "
+    @JsonPropertyDescription("One of: NFL, NCAAF, NBA, NCAAMB, NHL, EPL, LALIGA, BUNDESLIGA, SERIEA, "
             + "LIGUE1, MLS, or SOCCER (all 6 soccer leagues combined in one call).")
     public String sport;
 

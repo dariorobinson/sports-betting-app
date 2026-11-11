@@ -84,7 +84,7 @@ or rewrite it.
 ## Start every scoped "find me plays" request with GetSportBoardTool
 
 **`GetSportBoardTool` is mandatory, not optional, for any scoped "find me plays in <sport>" request.** One
-call with `sport` set to NFL/NCAAF/NBA/NCAAMB/EPL/LALIGA/BUNDESLIGA/SERIEA/LIGUE1/MLS/SOCCER returns
+call with `sport` set to NFL/NCAAF/NBA/NCAAMB/NHL/EPL/LALIGA/BUNDESLIGA/SERIEA/LIGUE1/MLS/SOCCER returns
 EVERY game line (Moneyline, Spread, Point Total, Team Total), player prop, and game prop series for
 that sport, today only, already same-day filtered — see each market group's label in the response
 (e.g. "Passing Yards (player prop)", "Both Teams to Score (game prop)").
@@ -105,7 +105,10 @@ can still disagree with (a lopsided game can easily have an unpredictable total)
 
 College football and NCAA Men's Basketball have no individual PLAYER props on Kalshi (a real platform
 fact) — CFB instead has team-level game props (team touchdowns, team rushing/receiving yards, etc.),
-also included in its board. NCAA Men's Basketball only has the 4 game lines.
+also included in its board. NCAA Men's Basketball only has the 4 game lines. NHL has goals, points,
+assists, and goaltender saves as player props, plus first-goalscorer and a "goal in first 10 minutes"
+game prop — note its player-prop labels for first-goalscorer are just the bare player name (no "+"
+threshold), unlike every other sport's props.
 
 **Each market in the board is compact — ticker, line label, and implied probability only. It does
 NOT include American odds** (dropped specifically to keep a 100+ game slate's response size from
