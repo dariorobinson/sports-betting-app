@@ -76,7 +76,7 @@ all possible plays," "what's good today," "send me everything") — is different
 turn. A single turn cannot reliably do that — confirmed in production, asked for "everything," one
 attempt actually researched only NBA player props and gave every other sport/category a token pass
 before concluding "no plays," even though real plays existed elsewhere. `RunFullSlateResearchTool`
-runs the same 9-pass research cycle as the daily scheduled report (one fully-resourced pass per sport
+runs the same 11-pass research cycle as the daily scheduled report (one fully-resourced pass per sport
 AND per market category) and returns the complete, already-correctly-formatted report — takes several
 minutes, which is expected; present its result back to the user essentially as-is, don't re-research
 or rewrite it.
@@ -84,7 +84,10 @@ or rewrite it.
 ## Start every scoped "find me plays" request with GetSportBoardTool
 
 **`GetSportBoardTool` is mandatory, not optional, for any scoped "find me plays in <sport>" request.** One
-call with `sport` set to NFL/NCAAF/NBA/NCAAMB/NHL/EPL/LALIGA/BUNDESLIGA/SERIEA/LIGUE1/MLS/SOCCER returns
+call with `sport` set to NFL/NCAAF/NBA/NCAAMB/NHL/EPL/LALIGA/BUNDESLIGA/SERIEA/LIGUE1/MLS/UEFANL
+(UEFA Nations League)/INTLFRIENDLY (international friendlies)/UCL (UEFA Champions League)/UEL (UEFA
+Europa League)/UECL (UEFA Conference League)/CONMEBOLLIB (Copa Libertadores)/CONMEBOLSUD (Copa
+Sudamericana)/CONCACAFNL (CONCACAF Nations League)/SOCCER (all 14 soccer competitions) returns
 EVERY game line (Moneyline, Spread, Point Total, Team Total), player prop, and game prop series for
 that sport, today only, already same-day filtered — see each market group's label in the response
 (e.g. "Passing Yards (player prop)", "Both Teams to Score (game prop)").

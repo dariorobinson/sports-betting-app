@@ -40,7 +40,10 @@ public class GetSportBoardTool implements Supplier<String> {
     private static final Logger log = LoggerFactory.getLogger(GetSportBoardTool.class);
 
     @JsonPropertyDescription("One of: NFL, NCAAF, NBA, NCAAMB, NHL, EPL, LALIGA, BUNDESLIGA, SERIEA, "
-            + "LIGUE1, MLS, or SOCCER (all 6 soccer leagues combined in one call).")
+            + "LIGUE1, MLS, UEFANL (UEFA Nations League), INTLFRIENDLY (international friendlies), "
+            + "UCL (UEFA Champions League), UEL (UEFA Europa League), UECL (UEFA Conference League), "
+            + "CONMEBOLLIB (Copa Libertadores), CONMEBOLSUD (Copa Sudamericana), CONCACAFNL (CONCACAF "
+            + "Nations League), or SOCCER (all 14 soccer competitions combined in one call).")
     public String sport;
 
     @Override

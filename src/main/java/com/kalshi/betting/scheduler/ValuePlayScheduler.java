@@ -61,17 +61,22 @@ public class ValuePlayScheduler {
                     this sport on Kalshi). Pull both teams' recent scoring/stat trend \
                     (GetTeamRecentFormTool) to back each one, not just their season-aggregate record."""),
             new SportTask("Soccer — Game Lines", """
-                    Call GetSportBoardTool with sport="SOCCER" (all 6 leagues in one call). Evaluate EVERY \
+                    Call GetSportBoardTool with sport="SOCCER" (all 14 soccer competitions in one call — \
+                    domestic leagues, national-team competitions, and continental club/confederation \
+                    competitions). Evaluate EVERY \
                     game-line market group for today's games — Moneyline, Spread, Point Total, and Team \
-                    Total — not just one market type. Apply extra scrutiny to Moneyline specifically \
+                    Total (note: Team Total doesn't exist for CONCACAFNL — skip it only for that one) — \
+                    not just one market type. Apply extra scrutiny to Moneyline specifically \
                     (soccer's draw outcome makes it a structurally weaker fit than a clean over/under \
                     line), but don't skip it outright if the data shows a real gap. Pull recent form \
                     (GetTeamRecentFormTool) and head-to-head for both teams."""),
             new SportTask("Soccer — Player/Game Props", """
-                    Call GetSportBoardTool with sport="SOCCER" (all 6 leagues in one call). Evaluate EVERY \
-                    Anytime Goalscorer and Both Teams to Score market group for today's games across all 6 \
-                    leagues. Back goalscorer props with the player's recent scoring form; back Both Teams \
-                    to Score with both teams' recent scoring/conceding trend (GetTeamRecentFormTool)."""),
+                    Call GetSportBoardTool with sport="SOCCER" (all 14 soccer competitions in one call). Evaluate EVERY \
+                    Anytime Goalscorer and Both Teams to Score market group for today's games across all \
+                    competitions (note: Anytime Goalscorer doesn't exist for UEL, UECL, CONMEBOLLIB, \
+                    CONMEBOLSUD, or CONCACAFNL — just skip it for those, Both Teams to Score still applies). \
+                    Back goalscorer props with the player's recent scoring form; back Both \
+                    Teams to Score with both teams' recent scoring/conceding trend (GetTeamRecentFormTool)."""),
             new SportTask("NFL — Game Lines", """
                     Call GetSportBoardTool with sport="NFL". Evaluate EVERY game-line market group it \
                     returns for today's games — Moneyline, Spread, Point Total, and Team Total — not just \

@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Hand-curated map of sport -> every Kalshi series worth checking for a same-day value play: the 4
@@ -43,7 +44,28 @@ final class SportMarketRegistry {
             new String[]{"BUNDESLIGA", "soccer", "ger.1"},
             new String[]{"SERIEA", "soccer", "ita.1"},
             new String[]{"LIGUE1", "soccer", "fra.1"},
-            new String[]{"MLS", "soccer", "usa.1"});
+            new String[]{"MLS", "soccer", "usa.1"},
+            new String[]{"UEFANL", "soccer", "uefa.nations"},
+            new String[]{"INTLFRIENDLY", "soccer", "fifa.friendly"},
+            new String[]{"UCL", "soccer", "uefa.champions"},
+            new String[]{"UEL", "soccer", "uefa.europa"},
+            new String[]{"UECL", "soccer", "uefa.europa.conf"},
+            new String[]{"CONMEBOLLIB", "soccer", "conmebol.libertadores"},
+            new String[]{"CONMEBOLSUD", "soccer", "conmebol.sudamericana"},
+            new String[]{"CONCACAFNL", "soccer", "concacaf.nations.league"});
+
+    /** Not every soccer competition has every market type on Kalshi — verified live, series ticker by
+     *  series ticker, that these specific (league, suffix) combinations simply don't exist (404 on
+     *  Kalshi's public series endpoint), unlike the "big 6" domestic leagues and the national-team
+     *  competitions, which all have the full set. Keyed by registry key -> the "KX{key}{suffix}" suffixes
+     *  to skip when building that league's market list, so this registry never hands out an invalid
+     *  ticker. */
+    private static final Map<String, Set<String>> SOCCER_MISSING_SUFFIXES = Map.of(
+            "UEL", Set.of("GOAL"),
+            "UECL", Set.of("GOAL"),
+            "CONMEBOLLIB", Set.of("GOAL"),
+            "CONMEBOLSUD", Set.of("GOAL"),
+            "CONCACAFNL", Set.of("TEAMTOTAL", "GOAL"));
 
     private static final Map<String, List<SeriesEntry>> BY_SPORT = buildRegistry();
 
@@ -69,11 +91,14 @@ final class SportMarketRegistry {
             String espnLeague = slug[2];
             boolean isSoccer = "soccer".equals(espnSport);
             String prefix = isSoccer ? key + " " : "";
-            List<SeriesEntry> entries = new ArrayList<>(List.of(
-                    new SeriesEntry(prefix + "Moneyline", "KX" + key + "GAME", espnSport, espnLeague),
-                    new SeriesEntry(prefix + "Spread", "KX" + key + "SPREAD", espnSport, espnLeague),
-                    new SeriesEntry(prefix + "Point Total", "KX" + key + "TOTAL", espnSport, espnLeague),
-                    new SeriesEntry(prefix + "Team Total", "KX" + key + "TEAMTOTAL", espnSport, espnLeague)));
+            Set<String> missing = SOCCER_MISSING_SUFFIXES.getOrDefault(key, Set.of());
+            List<SeriesEntry> entries = new ArrayList<>();
+            entries.add(new SeriesEntry(prefix + "Moneyline", "KX" + key + "GAME", espnSport, espnLeague));
+            entries.add(new SeriesEntry(prefix + "Spread", "KX" + key + "SPREAD", espnSport, espnLeague));
+            entries.add(new SeriesEntry(prefix + "Point Total", "KX" + key + "TOTAL", espnSport, espnLeague));
+            if (!missing.contains("TEAMTOTAL")) {
+                entries.add(new SeriesEntry(prefix + "Team Total", "KX" + key + "TEAMTOTAL", espnSport, espnLeague));
+            }
 
             switch (key) {
                 case "NFL" -> entries.addAll(List.of(
@@ -107,10 +132,14 @@ final class SportMarketRegistry {
                         new SeriesEntry("Goal in First 10 Minutes (game prop)", "KXNHLF10G", espnSport, espnLeague)));
                 default -> {
                     if (isSoccer) {
-                        entries.add(new SeriesEntry(key + " Anytime Goalscorer (player prop)",
-                                "KX" + key + "GOAL", espnSport, espnLeague));
-                        entries.add(new SeriesEntry(key + " Both Teams to Score (game prop)",
-                                "KX" + key + "BTTS", espnSport, espnLeague));
+                        if (!missing.contains("GOAL")) {
+                            entries.add(new SeriesEntry(key + " Anytime Goalscorer (player prop)",
+                                    "KX" + key + "GOAL", espnSport, espnLeague));
+                        }
+                        if (!missing.contains("BTTS")) {
+                            entries.add(new SeriesEntry(key + " Both Teams to Score (game prop)",
+                                    "KX" + key + "BTTS", espnSport, espnLeague));
+                        }
                     }
                 }
             }

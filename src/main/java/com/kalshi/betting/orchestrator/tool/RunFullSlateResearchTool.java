@@ -18,7 +18,7 @@ import java.util.function.Supplier;
         + "one category (NBA player props) and gave every other sport/category a token pass before "
         + "concluding 'no plays'. This tool instead runs the exact same battle-tested cycle as the "
         + "daily scheduled report: one independent, fully-resourced research pass per sport AND "
-        + "market category (9 passes total), then combines everything into one report. It takes "
+        + "market category (11 passes total), then combines everything into one report. It takes "
         + "several minutes — that's expected and correct for genuinely exhaustive multi-sport "
         + "research, not a problem to work around. Returns the complete, already-formatted report "
         + "text; present it to the user essentially as-is rather than summarizing, re-writing, or "
