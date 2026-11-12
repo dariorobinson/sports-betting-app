@@ -34,7 +34,13 @@ import java.util.function.Supplier;
         + "with that market's eventTicker to get the full odds you're required to report. ALWAYS call "
         + "this fresh for a new 'find me plays' request, even if you already called it earlier in this "
         + "conversation — never reuse an old result as if it's today's, since game data and the actual "
-        + "current date change between messages.")
+        + "current date change between messages. Each market group also carries espnSport/espnLeague — "
+        + "ALWAYS pass those exact values (never a guessed one) when calling GetInjuryReportTool/"
+        + "GetTeamRecentFormTool/GetTeamAnalyticsTool/GetPlayerRecentStatsTool for a team/player from "
+        + "that group. This matters most for soccer: a country's domestic club league and its national "
+        + "team use DIFFERENT ESPN league codes despite sharing a name (confirmed production failure: "
+        + "guessing 'esp.1' — Spain's club league, La Liga — for the Spain NATIONAL team playing under "
+        + "UEFANL/INTLFRIENDLY, which actually use 'uefa.nations'/'fifa.friendly').")
 public class GetSportBoardTool implements Supplier<String> {
 
     private static final Logger log = LoggerFactory.getLogger(GetSportBoardTool.class);

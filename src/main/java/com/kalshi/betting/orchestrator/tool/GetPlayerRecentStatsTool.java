@@ -20,7 +20,10 @@ public class GetPlayerRecentStatsTool implements Supplier<String> {
     @JsonPropertyDescription("ESPN sport slug, e.g. 'basketball', 'football'")
     public String sport;
 
-    @JsonPropertyDescription("ESPN league slug within that sport, e.g. 'nba', 'nfl'")
+    @JsonPropertyDescription("ESPN league slug within that sport, e.g. 'nba', 'nfl' — use the exact "
+            + "espnLeague value from GetSportBoardTool's matching market group rather than guessing, "
+            + "especially for soccer where a country's domestic club league and its national team use "
+            + "different codes despite sharing a name.")
     public String league;
 
     @JsonPropertyDescription("The player's CURRENT team name — partial names work, e.g. 'Lakers'")

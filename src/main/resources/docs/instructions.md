@@ -159,17 +159,22 @@ aren't obvious from the schema:
   above).
 - **GetTeamAnalyticsTool** — needs an ESPN sport slug ("basketball", "football", "baseball",
   "hockey", "soccer") and league slug ("nba", "wnba", "nfl", "college-football",
-  "mens-college-basketball", "mlb", "nhl", or a soccer competition code like "eng.1"/"usa.1"); infer
-  them from the series ticker or team names. Always pass `opponentName` when you know the matchup
-  (one call gets head-to-head too). Team names are matched fuzzily — **always check the returned
-  team's display name matches who you meant**, especially for short/ambiguous abbreviations (e.g.
-  "Miss State" could plausibly mean Mississippi State or Missouri State; prefer the fuller name —
-  "Mississippi State" — when a short form could collide with a different school).
+  "mens-college-basketball", "mlb", "nhl", or a soccer competition code like "eng.1"/"usa.1"). **Use
+  the exact `espnSport`/`espnLeague` from `GetSportBoardTool`'s matching market group — do NOT infer
+  or guess it from the series ticker or team/country name.** Confirmed production failure: guessing
+  "esp.1" (Spain's domestic club league, La Liga) for the Spain NATIONAL team, which actually plays
+  under "uefa.nations"/"fifa.friendly" — a country's club league and its national team are different
+  ESPN leagues despite sharing a name, and this mistake isn't limited to Spain. Always pass
+  `opponentName` when you know the matchup (one call gets head-to-head too). Team names are matched
+  fuzzily — **always check the returned team's display name matches who you meant**, especially for
+  short/ambiguous abbreviations (e.g. "Miss State" could plausibly mean Mississippi State or Missouri
+  State; prefer the fuller name — "Mississippi State" — when a short form could collide with a
+  different school).
 - **GetTeamRecentFormTool** — a team's last N played games (any opponent) with final scores, newest
   first — the full game-by-game detail. `GetSportBoardTool`'s `teamScoringTrends` already gives a
   compact avg-points-for/against first pass for every team on today's slate; reserve this tool for
   the specific games that pass are promising on and you want the full picture for before committing
-  to a play. Same sport/league slugs as GetTeamAnalyticsTool.
+  to a play. Same sport/league rule as GetTeamAnalyticsTool — use the board's exact values, never guess.
 - **GetPlayerRecentStatsTool** — a player's last N game box-score lines (points/rebounds/assists
   etc., labeled by ESPN's own stat names). **`GetSportBoardTool`'s `playerRecentStats` already covers
   this for EVERY player with an active prop today — check there FIRST.** Only call this tool
@@ -180,7 +185,9 @@ aren't obvious from the schema:
   a prop for a player you skipped checking. Checking just 2-3 recognizable stars and ignoring the rest
   of the board is exactly the failure this bulk data exists to prevent.
 - **GetInjuryReportTool** — mandatory for both teams before finalizing any play you're seriously
-  close to recommending (see above). Status vocabulary is ESPN's own (Out, Doubtful, Questionable,
+  close to recommending (see above). Same sport/league rule as GetTeamAnalyticsTool — use the exact
+  `espnSport`/`espnLeague` from `GetSportBoardTool`'s matching market group, never guess it. Status
+  vocabulary is ESPN's own (Out, Doubtful, Questionable,
   Injured Reserve, Day-To-Day). An empty result is NOT confirmation everyone's healthy — college
   sports in particular report this far less consistently than the pros; say so if an empty report
   feels like it might just be a reporting gap rather than a genuinely clean bill of health, for a

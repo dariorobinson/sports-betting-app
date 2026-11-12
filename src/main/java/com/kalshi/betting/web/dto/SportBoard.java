@@ -19,8 +19,15 @@ public record SportBoard(String sport, List<MarketGroup> marketGroups, List<Team
 
     /** One series' worth of today's games, labeled with what kind of market it is (e.g. "Moneyline",
      *  "Spread", "Passing Yards (player prop)", "Both Teams to Score (game prop)") so the model
-     *  doesn't have to guess what a raw series ticker means. */
-    public record MarketGroup(String marketType, String seriesTicker, List<CompactGame> games) {
+     *  doesn't have to guess what a raw series ticker means. {@code espnSport}/{@code espnLeague} are
+     *  the EXACT values to pass to GetInjuryReportTool/GetTeamRecentFormTool/GetTeamAnalyticsTool/
+     *  GetPlayerRecentStatsTool for any team/player in this group's games — confirmed in production
+     *  that guessing them instead is unreliable for soccer specifically, where a country's domestic
+     *  club league and its national team use different ESPN league codes despite sharing a name (e.g.
+     *  Spain's club league is "esp.1", but the Spain national team's games live under "uefa.nations" /
+     *  "fifa.friendly" / etc., never "esp.1"). */
+    public record MarketGroup(String marketType, String seriesTicker, String espnSport, String espnLeague,
+                               List<CompactGame> games) {
     }
 
     /** One game, compact: just the title (e.g. "Alabama vs LSU", also used to resolve team names for

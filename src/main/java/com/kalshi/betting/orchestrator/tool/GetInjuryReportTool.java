@@ -26,7 +26,11 @@ public class GetInjuryReportTool implements Supplier<String> {
 
     @JsonPropertyDescription("ESPN league slug within that sport, e.g. 'nba', 'nfl', "
             + "'college-football', 'mens-college-basketball'. For soccer this is a competition code "
-            + "like 'eng.1' (Premier League) or 'usa.1' (MLS).")
+            + "like 'eng.1' (Premier League) or 'usa.1' (MLS) — use the exact espnLeague value from "
+            + "GetSportBoardTool's matching market group, never guess it: a country's domestic club "
+            + "league and its national team use DIFFERENT codes despite sharing a name (e.g. Spain's "
+            + "club league is 'esp.1', but Spain's national team plays under 'uefa.nations' / "
+            + "'fifa.friendly', never 'esp.1').")
     public String league;
 
     @JsonPropertyDescription("Team name — partial names work, e.g. 'Lakers' matches 'Los Angeles Lakers'")

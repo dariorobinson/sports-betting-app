@@ -192,7 +192,8 @@ public class SportsCatalogService {
             log.warn("Sport board: fetching {} ({}) failed: {}",
                     entry.seriesTicker(), entry.marketType(), e.getMessage());
             return new FetchedGroup(
-                    new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(), List.of()), List.of(), List.of());
+                    new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(),
+                            entry.espnSport(), entry.espnLeague(), List.of()), List.of(), List.of());
         }
 
         List<TeamLookup> teamLookups = new ArrayList<>();
@@ -225,7 +226,8 @@ public class SportsCatalogService {
         }
 
         return new FetchedGroup(
-                new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(), compactGames),
+                new SportBoard.MarketGroup(entry.marketType(), entry.seriesTicker(),
+                        entry.espnSport(), entry.espnLeague(), compactGames),
                 teamLookups, playerLookups);
     }
 
