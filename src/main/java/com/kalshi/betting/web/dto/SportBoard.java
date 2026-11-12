@@ -1,5 +1,6 @@
 package com.kalshi.betting.web.dto;
 
+import com.kalshi.betting.sportsdata.GameWeather;
 import com.kalshi.betting.sportsdata.PlayerRecentStats;
 import com.kalshi.betting.sportsdata.TeamScoringTrend;
 
@@ -11,9 +12,10 @@ import java.util.List;
  *  {@code GameSummary}/{@code MarketSummary} shape — a single busy slate (e.g. ~390 College Football
  *  games across 9 series on a Saturday, ~5,400 individual markets) is large enough with the full field
  *  set to exceed the model's prompt-size limit entirely; this trims every field not needed for a
- *  bulk first-pass scan without dropping a single market/line. */
+ *  bulk first-pass scan without dropping a single market/line. {@code gameWeather} is only populated
+ *  for outdoor sports (NFL, NCAAF, soccer) — empty for always-indoor ones (NBA, NCAAMB, NHL). */
 public record SportBoard(String sport, List<MarketGroup> marketGroups, List<TeamScoringTrend> teamScoringTrends,
-                          List<PlayerRecentStats> playerRecentStats) {
+                          List<PlayerRecentStats> playerRecentStats, List<GameWeather> gameWeather) {
 
     /** One series' worth of today's games, labeled with what kind of market it is (e.g. "Moneyline",
      *  "Spread", "Passing Yards (player prop)", "Both Teams to Score (game prop)") so the model

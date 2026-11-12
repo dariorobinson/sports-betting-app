@@ -4,7 +4,9 @@ A Spring Boot app that researches sports betting value on Kalshi and reports it 
 place, cancel, or modify any bet. It compares real statistics (ESPN + web search) against Kalshi's
 live market prices to find plays where the data suggests a meaningfully better true probability than
 Kalshi's price implies, across College Football, Soccer, NFL, NBA, NCAA Men's Basketball, and NHL —
-Moneyline, Spread, Point Total, Team Total, player props, and game props, not just moneyline. Built
+Moneyline, Spread, Point Total, Team Total, player props, and game props, not just moneyline —
+factoring in live weather conditions for outdoor sports (NFL, NCAAF, soccer) where rain/snow/extreme
+conditions can suppress scoring beyond what season stats alone would suggest. Built
 against Kalshi's Trade API v2 (`openapi.yaml` in this repo) for **market data only** — browsing
 series, events, markets, and order books, all public/read-only endpoints.
 

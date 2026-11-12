@@ -2,6 +2,7 @@ package com.kalshi.betting.service;
 
 import com.kalshi.betting.client.KalshiApiClient;
 import com.kalshi.betting.client.dto.EventData;
+import com.kalshi.betting.sportsdata.GameWeather;
 import com.kalshi.betting.sportsdata.PlayerRecentStats;
 import com.kalshi.betting.sportsdata.SportsAnalyticsService;
 import com.kalshi.betting.sportsdata.TeamScoringTrend;
@@ -131,8 +132,35 @@ public class SportsCatalogService {
         List<PlayerLookup> playerLookups = fetched.stream().flatMap(f -> f.playerLookups().stream()).toList();
         List<TeamScoringTrend> trends = fetchTeamScoringTrends(teamLookups);
         List<PlayerRecentStats> playerStats = fetchPlayerRecentStatsBulk(teamLookups, playerLookups);
+        List<GameWeather> weather = fetchGameWeather(teamLookups);
 
-        return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups, trends, playerStats);
+        return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups, trends, playerStats, weather);
+    }
+
+    /** ESPN sport slugs where weather can realistically affect a game — basketball (NBA/NCAAMB) and
+     *  hockey (NHL) are always indoor, so weather is skipped entirely for those, never fetched. */
+    private static final java.util.Set<String> OUTDOOR_ESPN_SPORTS = java.util.Set.of("football", "soccer");
+
+    /** Current forecast for every game in an outdoor sport's slate (NFL, NCAAF, soccer) — one ESPN
+     *  scoreboard call per distinct (sport, league) covers that whole league's games at once (soccer's
+     *  combined "SOCCER" key spans 6 leagues, so up to 6 calls, each covering one league's full day).
+     *  A dome/retractable-roof game still comes back explicitly labeled "Indoor/Dome" rather than
+     *  omitted — see {@link SportsAnalyticsService#getGameWeatherForSlate}. */
+    private List<GameWeather> fetchGameWeather(List<TeamLookup> teamLookups) {
+        return teamLookups.stream()
+                .map(lk -> lk.espnSport() + "|" + lk.espnLeague())
+                .distinct()
+                .filter(key -> OUTDOOR_ESPN_SPORTS.contains(key.split("\\|", 2)[0]))
+                .flatMap(key -> {
+                    String[] parts = key.split("\\|", 2);
+                    try {
+                        return sportsAnalyticsService.getGameWeatherForSlate(parts[0], parts[1]).stream();
+                    } catch (RuntimeException e) {
+                        log.warn("Sport board: weather fetch for {} failed: {}", key, e.getMessage());
+                        return java.util.stream.Stream.<GameWeather>empty();
+                    }
+                })
+                .toList();
     }
 
     private record TeamLookup(String espnSport, String espnLeague, String teamName) {

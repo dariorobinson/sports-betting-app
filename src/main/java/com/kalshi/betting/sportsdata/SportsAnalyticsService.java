@@ -464,6 +464,38 @@ public class SportsAnalyticsService {
                 "No player matching \"" + playerName + "\" found in current golf/" + league + " leaderboard");
     }
 
+    /** Current forecast for every game on this sport/league's scoreboard right now — e.g.
+     *  sport="football", league="nfl" or "college-football". One ESPN call covers the whole day's
+     *  slate (unlike team/player stats, nothing per-game needed), so bulk callers (see
+     *  {@code SportsCatalogService#getSportBoard}) can attach weather to an entire board in one
+     *  extra round trip. {@code game} is "{Team A} vs {Team B}", matching Kalshi's own event-title
+     *  convention, so a caller can cross-reference directly. A dome/retractable-roof stadium reports
+     *  no weather at all (confirmed live) — represented here as condition="Indoor/Dome", not dropped,
+     *  so the model can see explicitly that weather isn't a factor rather than wondering why a game
+     *  is simply missing. */
+    public List<GameWeather> getGameWeatherForSlate(String sport, String league) {
+        EspnScoreboardResponse scoreboard = espnApiClient.getScoreboard(sport, league);
+        List<GameWeather> result = new ArrayList<>();
+        for (EspnScoreboardResponse.Event event : scoreboard.events()) {
+            for (EspnScoreboardResponse.Competition competition : event.competitions()) {
+                List<String> teamNames = competition.competitors().stream()
+                        .map(EspnScoreboardResponse.Competitor::team)
+                        .filter(java.util.Objects::nonNull)
+                        .map(EspnTeam::displayName)
+                        .toList();
+                if (teamNames.size() != 2) {
+                    continue;
+                }
+                String game = teamNames.get(0) + " vs " + teamNames.get(1);
+                EspnScoreboardResponse.Weather w = event.weather();
+                result.add(w == null
+                        ? new GameWeather(game, "Indoor/Dome", null)
+                        : new GameWeather(game, w.displayValue(), w.temperature()));
+            }
+        }
+        return result;
+    }
+
     /** Case-insensitive: the query appearing in any of the athlete's name fields. */
     private static boolean matches(EspnAthlete athlete, String query) {
         if (athlete == null || query == null || query.isBlank()) {

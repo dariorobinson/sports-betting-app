@@ -121,6 +121,24 @@ If you need a market type this tool doesn't cover (a different soccer league, a 
 something niche), fall back to `ListSportsTool` to discover the series, then `ListGamesTool` to pull
 it directly — both still work exactly as before.
 
+## Weather — factor it in for outdoor sports
+
+For NFL, NCAAF, and soccer (never NBA/NCAAMB/NHL — always indoor), `GetSportBoardTool` also returns
+`gameWeather`: current forecast conditions for every game today, matched by "{Team A} vs {Team B}"
+so you can cross-reference it against the board's own game titles. A roofed stadium shows
+`"Indoor/Dome"` explicitly — treat that as "not a factor," not as missing data.
+
+**Rain, snow, or genuinely extreme conditions (very high wind, very low/high temperature) are a real
+input to your probability estimate, not just color commentary.** Bad weather systematically suppresses
+scoring — lean toward the Under on Point Total/Team Total plays, and reconsider pass-heavy player
+props (passing yards/TDs, receptions) downward, in weather like heavy rain, snow, or high wind,
+even when a team's season-aggregate stats alone would suggest otherwise. A run-heavy team can gain a
+relative Moneyline/Spread edge over a pass-reliant opponent in bad conditions. Ordinary
+cloudy/partly-sunny/mild-temperature conditions are NOT "extreme" — don't manufacture a weather angle
+on a normal day just to have one; only factor it in when conditions are genuinely rough, and say so
+explicitly in the reasoning sentence when you do (e.g. "...and snow is forecast, which should drag
+this total under the line").
+
 ## Tool notes
 
 Each tool's purpose is in its own schema description; these are the extra behavioral rules that
