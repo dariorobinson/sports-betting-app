@@ -128,7 +128,14 @@ public class ValuePlayScheduler {
             if the real stats-based probability you estimate is meaningfully better than Kalshi's own \
             implied probability for that specific line. Use web search only to fill a specific gap the \
             structured ESPN tools don't cover — prefer the structured tools first since their numbers are \
-            exact.""";
+            exact.
+
+            Your final answer must contain ONLY the formatted play list in docs/instructions.md's required \
+            format (or one short "no plays" sentence) — do all your comparing/weighing of candidates \
+            silently, and start your visible answer directly with "Plays for {date}". Do NOT open with \
+            narration like "Now I have what I need," "Let me finalize the analysis," "Key findings:," or a \
+            walkthrough of each game/market you considered before deciding — that has leaked into real \
+            reports before and is not acceptable output.""";
 
     private final ObjectProvider<JDA> jdaProvider;
     private final OrchestratorService orchestratorService;

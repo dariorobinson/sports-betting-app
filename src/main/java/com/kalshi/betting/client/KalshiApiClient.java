@@ -102,21 +102,48 @@ public class KalshiApiClient {
 
     // ---- HTTP plumbing ----
 
+    /** Total attempts for a single logical call if Kalshi responds 429 — the underlying HTTP
+     *  client's own automatic retry is deliberately disabled (see {@code RestClientConfig}), so this
+     *  is the ONLY retry path, and the only one that re-acquires a {@link KalshiRateLimiter} slot
+     *  before trying again rather than silently bypassing the app-wide throttle. */
+    private static final int MAX_ATTEMPTS = 3;
+
     private <T> T get(String path, MultiValueMap<String, String> queryParams, boolean authenticated,
                        Class<T> responseType) {
-        KalshiRequestSigner.SignedHeaders signed = authenticated ? signer.sign("GET", basePath + path) : null;
-        return restClient.get()
-                .uri(uriBuilder -> {
-                    uriBuilder.path(path);
-                    if (queryParams != null && !queryParams.isEmpty()) {
-                        uriBuilder.queryParams(queryParams);
-                    }
-                    return uriBuilder.build();
-                })
-                .headers(headers -> applyAuth(headers, signed))
-                .retrieve()
-                .onStatus(status -> status.value() >= 400, this::raiseApiException)
-                .body(responseType);
+        KalshiApiException lastError = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            KalshiRateLimiter.acquire();
+            KalshiRequestSigner.SignedHeaders signed = authenticated ? signer.sign("GET", basePath + path) : null;
+            try {
+                return restClient.get()
+                        .uri(uriBuilder -> {
+                            uriBuilder.path(path);
+                            if (queryParams != null && !queryParams.isEmpty()) {
+                                uriBuilder.queryParams(queryParams);
+                            }
+                            return uriBuilder.build();
+                        })
+                        .headers(headers -> applyAuth(headers, signed))
+                        .retrieve()
+                        .onStatus(status -> status.value() >= 400, this::raiseApiException)
+                        .body(responseType);
+            } catch (KalshiApiException e) {
+                if (e.statusCode().value() != 429 || attempt == MAX_ATTEMPTS) {
+                    throw e;
+                }
+                lastError = e;
+                sleepBeforeRetry(attempt);
+            }
+        }
+        throw lastError;
+    }
+
+    private void sleepBeforeRetry(int attempt) {
+        try {
+            Thread.sleep(500L * attempt);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void applyAuth(org.springframework.http.HttpHeaders headers, KalshiRequestSigner.SignedHeaders signed) {

@@ -249,6 +249,14 @@ Plays for {today's date}
   about it. No closing summary, no "I also checked X and Y" paragraph, no restating your own
   methodology. This is a direct consequence of every extra sentence costing real API tokens on every
   single report.
+- **This means literally zero scratch-work/reasoning-out-loud text before the list, confirmed as a
+  real recurring failure in production.** Do not open your answer with anything like "Now I have
+  what I need," "Let me finalize the analysis," "Key findings:," "Let me also check X more
+  carefully," or a walkthrough of each candidate before you settle on which ones clear the bar — do
+  ALL of that reasoning silently/internally, and let your visible answer begin directly with
+  "Plays for {date}" (or the one-sentence "no plays" statement). The reasoning for EACH included
+  play still belongs — but only as that play's own one-sentence stats line in the required format,
+  never as a separate paragraph before or after the list.
 
 ## General guidance
 

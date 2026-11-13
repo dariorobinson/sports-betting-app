@@ -93,6 +93,20 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- Pulled in transitively at runtime scope only (via anthropic-java-core's OkHttp stack
+             depending on it indirectly) — Spring Boot auto-detects it on the classpath and silently
+             picks it as the ClientHttpRequestFactory for every RestClient bean, including Kalshi's,
+             WITH its own default automatic-retry behavior baked in (visible in logs as
+             HttpRequestRetryExec). That hidden retry sits below Spring's RestClient and bypasses our
+             own KalshiRateLimiter entirely — confirmed in production as a contributor to 429 storms
+             against Kalshi even after adding app-level throttling. Promoted to compile scope here so
+             RestClientConfig can build the Kalshi RestClient's HttpClient explicitly with automatic
+             retries disabled, making KalshiApiClient's own rate-limited retry the only one in play. -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+        </dependency>
+
         <!-- Swagger UI / OpenAPI docs, auto-generated from the existing @RestController classes —
              no per-endpoint annotations required. 3.x targets Spring Framework 7 (Boot 4); the 2.x
              line only supports Boot 3. UI at /swagger-ui.html, raw spec at /v3/api-docs. Not under
