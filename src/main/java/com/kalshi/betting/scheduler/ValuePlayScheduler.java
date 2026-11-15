@@ -131,11 +131,15 @@ public class ValuePlayScheduler {
             exact.
 
             Your final answer must contain ONLY the formatted play list in docs/instructions.md's required \
-            format (or one short "no plays" sentence) — do all your comparing/weighing of candidates \
-            silently, and start your visible answer directly with "Plays for {date}". Do NOT open with \
-            narration like "Now I have what I need," "Let me finalize the analysis," "Key findings:," or a \
-            walkthrough of each game/market you considered before deciding — that has leaked into real \
-            reports before and is not acceptable output.""";
+            format (or one short "no plays" sentence) — nothing else, anywhere in the response. Do all \
+            comparing/weighing of candidates silently and start your visible answer directly with "Plays \
+            for {date}". This has leaked into real reports across multiple rounds of user feedback and is \
+            not acceptable output — specifically banned: opening narration ("Now I have what I need," \
+            "Let me finalize the analysis," "Key findings:," "Based on the data, let me note..."), a \
+            walkthrough comparing candidates before picking winners, mid-sentence self-correction ("let me \
+            restate... actually..."), a fake play entry for a market you're SKIPPING (e.g. "N/A ... \
+            Skipped: no real edge"), and any closing mention of what else you checked but didn't include. \
+            If you're not recommending it, it must leave zero trace in the response.""";
 
     private final ObjectProvider<JDA> jdaProvider;
     private final OrchestratorService orchestratorService;
