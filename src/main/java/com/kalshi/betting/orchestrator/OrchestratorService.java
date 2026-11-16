@@ -401,7 +401,67 @@ public class OrchestratorService {
             responseText = forceSynthesis(assembleRequest(toolClasses, baseMessages, turns));
         }
 
-        return responseText;
+        return sanitizePlaysResponse(responseText);
+    }
+
+    /**
+     * Draft responses have repeatedly leaked scratch-work/narration around the required play-list
+     * format despite instructions.md explicitly prohibiting it — confirmed across multiple rounds of
+     * real user feedback (opening narration like "Now I have what I need," a walkthrough comparing
+     * candidates before picking winners, mid-sentence self-correction like "let me restate... actually
+     * ...", fake entries for markets that were SKIPPED, a closing "here's what else I checked"
+     * paragraph). Strengthening the prompt alone didn't hold up reliably once a single turn had to
+     * juggle many tool results and candidates while ALSO never thinking out loud — that's two hard
+     * jobs at once. This runs a second, tools-disabled pass whose ONLY job is to mechanically strip
+     * anything outside the required format from an already-written draft — a much easier instruction
+     * to follow in isolation than "analyze N candidates and never narrate" in the same turn. Skipped
+     * (no extra API call) when the draft plainly isn't a play list at all.
+     */
+    private String sanitizePlaysResponse(String rawResponse) {
+        if (rawResponse.isBlank() || !rawResponse.contains("Plays for ")) {
+            return rawResponse;
+        }
+        String prompt = """
+                Below is a draft response that's supposed to contain ONLY a sports value-play list, but \
+                earlier drafts from this same system have sometimes leaked extra text around it: opening \
+                narration ("Now I have what I need," "Let me finalize the analysis," "Key findings:," \
+                "Based on the data, let me note..."), a walkthrough comparing candidates before picking \
+                winners, mid-sentence self-correction ("let me restate... actually..."), a fake entry for \
+                a market that was SKIPPED (e.g. "N/A ... Skipped: no real edge"), or a closing paragraph \
+                about what else was checked but not included.
+
+                Re-emit the draft with ALL of that removed, keeping ONLY: the "Plays for {date}" header \
+                line, and for each genuinely recommended play, its one formatted line (league/team/\
+                market/odds/probabilities) plus its one-sentence reasoning, with one blank line between \
+                plays. If the draft says no plays qualify, output just that one sentence (still drop any \
+                narration around it). Do not change, add, or remove any actual team, market, number, \
+                odds, or probability — only strip the narration/scratch-work/skipped-entry text around \
+                them. If the draft already has none of that leakage, return it byte-for-byte unchanged.
+
+                Draft:
+                %s""".formatted(rawResponse);
+
+        MessageCreateParams params = MessageCreateParams.builder()
+                .model(MODEL)
+                .maxTokens(8192L)
+                .thinking(BetaThinkingConfigDisabled.builder().build())
+                .addUserMessage(prompt)
+                .build();
+
+        BetaMessage message = client.beta().messages().create(params);
+        StringBuilder text = new StringBuilder();
+        for (BetaContentBlock block : message.content()) {
+            block.text().ifPresent(t -> text.append(t.text()));
+        }
+        String cleaned = text.toString();
+        if (cleaned.isBlank()) {
+            return rawResponse;
+        }
+        if (!cleaned.equals(rawResponse)) {
+            log.info("Sanitized narration/scratch-work out of a play-list response ({} chars -> {} chars)",
+                    rawResponse.length(), cleaned.length());
+        }
+        return cleaned;
     }
 
     /** Rebuilds the accumulated conversation with NO tools attached and a blunt "stop researching,
