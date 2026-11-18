@@ -78,8 +78,9 @@ public class OrchestratorService {
      *  and adds resilience when a single turn emits many tool-result blocks. */
     private static final int SLIDING_BREAKPOINTS = 2;
 
-    /** Tool set for the daily value-play scheduler's per-(sport, category) research tasks — 11 on a
-     *  normal day, automatically more if a sport's slate is unusually busy (see
+    /** Tool set for the daily value-play scheduler's per-(sport, category) research tasks — 30 on a
+     *  normal day (one per individual market/stat type, not just per sport/category), automatically
+     *  more if a sport's slate is unusually busy (see
      *  {@code ValuePlayScheduler}) — deliberately does NOT include {@link RunFullSlateResearchTool},
      *  which itself runs this exact same set of tasks; including it here would let a sub-task
      *  recursively re-trigger the whole cycle. */

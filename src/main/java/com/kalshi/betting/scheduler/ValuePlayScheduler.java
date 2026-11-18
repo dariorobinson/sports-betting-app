@@ -94,12 +94,32 @@ public class ValuePlayScheduler {
                     returns for today's games — Moneyline, Spread, Point Total, and Team Total — not just \
                     Moneyline. Pull both teams' recent scoring trend (GetTeamRecentFormTool), not just \
                     their season-aggregate record."""),
-            new CategoryTemplate("NCAAF", "College Football — Team Props", """
-                    Call GetSportBoardTool with sport="NCAAF". Evaluate EVERY team-level game-prop market \
-                    group it returns for today's games — team touchdowns, team rushing yards, team \
-                    receiving yards, team sacks, team interceptions (no individual player props exist for \
-                    this sport on Kalshi). Pull both teams' recent scoring/stat trend \
-                    (GetTeamRecentFormTool) to back each one, not just their season-aggregate record."""),
+            new CategoryTemplate("NCAAF", "College Football — Team Touchdowns", """
+                    Call GetSportBoardTool with sport="NCAAF". Evaluate ONLY the "Team Touchdowns (game \
+                    prop)" market group for today's games — ignore every other market group, those are \
+                    covered by separate tasks (no individual player props exist for this sport on Kalshi, \
+                    only team-level ones). Pull both teams' recent scoring/stat trend \
+                    (GetTeamRecentFormTool) to back each play, not just their season-aggregate record."""),
+            new CategoryTemplate("NCAAF", "College Football — Team Rushing Yards", """
+                    Call GetSportBoardTool with sport="NCAAF". Evaluate ONLY the "Team Rushing Yards (game \
+                    prop)" market group for today's games — ignore every other market group, those are \
+                    covered by separate tasks. Pull both teams' recent scoring/stat trend \
+                    (GetTeamRecentFormTool) to back each play, not just their season-aggregate record."""),
+            new CategoryTemplate("NCAAF", "College Football — Team Receiving Yards", """
+                    Call GetSportBoardTool with sport="NCAAF". Evaluate ONLY the "Team Receiving Yards \
+                    (game prop)" market group for today's games — ignore every other market group, those \
+                    are covered by separate tasks. Pull both teams' recent scoring/stat trend \
+                    (GetTeamRecentFormTool) to back each play, not just their season-aggregate record."""),
+            new CategoryTemplate("NCAAF", "College Football — Team Sacks", """
+                    Call GetSportBoardTool with sport="NCAAF". Evaluate ONLY the "Team Sacks (game prop)" \
+                    market group for today's games — ignore every other market group, those are covered \
+                    by separate tasks. Pull both teams' recent scoring/stat trend (GetTeamRecentFormTool) \
+                    to back each play, not just their season-aggregate record."""),
+            new CategoryTemplate("NCAAF", "College Football — Team Interceptions", """
+                    Call GetSportBoardTool with sport="NCAAF". Evaluate ONLY the "Team Interceptions (game \
+                    prop)" market group for today's games — ignore every other market group, those are \
+                    covered by separate tasks. Pull both teams' recent scoring/stat trend \
+                    (GetTeamRecentFormTool) to back each play, not just their season-aggregate record."""),
             new CategoryTemplate("SOCCER", "Soccer — Game Lines", """
                     Call GetSportBoardTool with sport="SOCCER" (all 14 soccer competitions in one call). \
                     Evaluate EVERY game-line market group for today's games — Moneyline, Spread, Point \
@@ -108,35 +128,98 @@ public class ValuePlayScheduler {
                     specifically (soccer's draw outcome makes it a structurally weaker fit than a clean \
                     over/under line), but don't skip it outright if the data shows a real gap. Pull \
                     recent form (GetTeamRecentFormTool) and head-to-head for both teams."""),
-            new CategoryTemplate("SOCCER", "Soccer — Player/Game Props", """
+            new CategoryTemplate("SOCCER", "Soccer — Anytime Goalscorer", """
                     Call GetSportBoardTool with sport="SOCCER" (all 14 soccer competitions in one call). \
-                    Evaluate EVERY Anytime Goalscorer and Both Teams to Score market group for today's \
-                    games across all competitions (note: Anytime Goalscorer doesn't exist for UEL, UECL, \
-                    CONMEBOLLIB, CONMEBOLSUD, or CONCACAFNL — just skip it for those, Both Teams to Score \
-                    still applies). Back goalscorer props with the player's recent scoring form; back \
-                    Both Teams to Score with both teams' recent scoring/conceding trend \
-                    (GetTeamRecentFormTool)."""),
+                    Evaluate ONLY the Anytime Goalscorer market groups for today's games across all \
+                    competitions (note: doesn't exist for UEL, UECL, CONMEBOLLIB, CONMEBOLSUD, or \
+                    CONCACAFNL — just skip those) — ignore Both Teams to Score, that's covered by a \
+                    separate task. Back every goalscorer prop with the player's recent scoring form."""),
+            new CategoryTemplate("SOCCER", "Soccer — Both Teams to Score", """
+                    Call GetSportBoardTool with sport="SOCCER" (all 14 soccer competitions in one call). \
+                    Evaluate ONLY the Both Teams to Score market groups for today's games across all \
+                    competitions — ignore Anytime Goalscorer, that's covered by a separate task. Back \
+                    each one with both teams' recent scoring/conceding trend (GetTeamRecentFormTool)."""),
             new CategoryTemplate("NFL", "NFL — Game Lines", """
                     Call GetSportBoardTool with sport="NFL". Evaluate EVERY game-line market group it \
                     returns for today's games — Moneyline, Spread, Point Total, and Team Total — not just \
                     Moneyline. Back every play with standings/head-to-head/recent form \
                     (GetTeamAnalyticsTool + GetTeamRecentFormTool)."""),
-            new CategoryTemplate("NFL", "NFL — Player Props", """
-                    Call GetSportBoardTool with sport="NFL". Evaluate EVERY player-prop market group it \
-                    returns for today's games — passing yards, rushing yards, receptions, receiving yards, \
-                    passing touchdowns. Back every single player prop with GetPlayerRecentStatsTool for \
-                    that player's last ~10 games — do not recommend a player prop you haven't pulled \
-                    recent game logs for."""),
+            new CategoryTemplate("NFL", "NFL — Passing Yards", """
+                    Call GetSportBoardTool with sport="NFL". Evaluate ONLY the "Passing Yards (player \
+                    prop)" market group for today's games — ignore every other player-prop category, \
+                    those are covered by separate tasks. Back every single prop with \
+                    GetPlayerRecentStatsTool for that player's last ~10 games — do not recommend one you \
+                    haven't pulled recent game logs for."""),
+            new CategoryTemplate("NFL", "NFL — Rushing Yards", """
+                    Call GetSportBoardTool with sport="NFL". Evaluate ONLY the "Rushing Yards (player \
+                    prop)" market group for today's games — ignore every other player-prop category, \
+                    those are covered by separate tasks. Back every single prop with \
+                    GetPlayerRecentStatsTool for that player's last ~10 games — do not recommend one you \
+                    haven't pulled recent game logs for."""),
+            new CategoryTemplate("NFL", "NFL — Receptions", """
+                    Call GetSportBoardTool with sport="NFL". Evaluate ONLY the "Receptions (player prop)" \
+                    market group for today's games — ignore every other player-prop category, those are \
+                    covered by separate tasks. Back every single prop with GetPlayerRecentStatsTool for \
+                    that player's last ~10 games — do not recommend one you haven't pulled recent game \
+                    logs for."""),
+            new CategoryTemplate("NFL", "NFL — Receiving Yards", """
+                    Call GetSportBoardTool with sport="NFL". Evaluate ONLY the "Receiving Yards (player \
+                    prop)" market group for today's games — ignore every other player-prop category, \
+                    those are covered by separate tasks. Back every single prop with \
+                    GetPlayerRecentStatsTool for that player's last ~10 games — do not recommend one you \
+                    haven't pulled recent game logs for."""),
+            new CategoryTemplate("NFL", "NFL — Passing Touchdowns", """
+                    Call GetSportBoardTool with sport="NFL". Evaluate ONLY the "Passing Touchdowns \
+                    (player prop)" market group for today's games — ignore every other player-prop \
+                    category, those are covered by separate tasks. Back every single prop with \
+                    GetPlayerRecentStatsTool for that player's last ~10 games — do not recommend one you \
+                    haven't pulled recent game logs for."""),
             new CategoryTemplate("NBA", "NBA — Game Lines", """
                     Call GetSportBoardTool with sport="NBA". Evaluate EVERY game-line market group it \
                     returns for today's games — Moneyline, Spread, Point Total, and Team Total — not just \
                     Moneyline. Back every play with GetTeamAnalyticsTool/GetTeamRecentFormTool."""),
-            new CategoryTemplate("NBA", "NBA — Player Props", """
-                    Call GetSportBoardTool with sport="NBA". Evaluate EVERY player-prop market group it \
-                    returns for today's games — points, rebounds, assists, steals, blocks, threes made. \
-                    Back every single player prop with GetPlayerRecentStatsTool for that player's last ~10 \
-                    games — state plainly how many actually cleared the specific threshold Kalshi is \
-                    pricing. Do not recommend a player prop you haven't pulled recent game logs for."""),
+            new CategoryTemplate("NBA", "NBA — Points", """
+                    Call GetSportBoardTool with sport="NBA". Evaluate ONLY the "Points (player prop)" \
+                    market group for today's games — ignore every other player-prop category, those are \
+                    covered by separate tasks. Back every single prop with GetPlayerRecentStatsTool for \
+                    that player's last ~10 games — state plainly how many actually cleared the specific \
+                    threshold Kalshi is pricing. Do not recommend one you haven't pulled recent game logs \
+                    for."""),
+            new CategoryTemplate("NBA", "NBA — Rebounds", """
+                    Call GetSportBoardTool with sport="NBA". Evaluate ONLY the "Rebounds (player prop)" \
+                    market group for today's games — ignore every other player-prop category, those are \
+                    covered by separate tasks. Back every single prop with GetPlayerRecentStatsTool for \
+                    that player's last ~10 games — state plainly how many actually cleared the specific \
+                    threshold Kalshi is pricing. Do not recommend one you haven't pulled recent game logs \
+                    for."""),
+            new CategoryTemplate("NBA", "NBA — Assists", """
+                    Call GetSportBoardTool with sport="NBA". Evaluate ONLY the "Assists (player prop)" \
+                    market group for today's games — ignore every other player-prop category, those are \
+                    covered by separate tasks. Back every single prop with GetPlayerRecentStatsTool for \
+                    that player's last ~10 games — state plainly how many actually cleared the specific \
+                    threshold Kalshi is pricing. Do not recommend one you haven't pulled recent game logs \
+                    for."""),
+            new CategoryTemplate("NBA", "NBA — Steals", """
+                    Call GetSportBoardTool with sport="NBA". Evaluate ONLY the "Steals (player prop)" \
+                    market group for today's games — ignore every other player-prop category, those are \
+                    covered by separate tasks. Back every single prop with GetPlayerRecentStatsTool for \
+                    that player's last ~10 games — state plainly how many actually cleared the specific \
+                    threshold Kalshi is pricing. Do not recommend one you haven't pulled recent game logs \
+                    for."""),
+            new CategoryTemplate("NBA", "NBA — Blocks", """
+                    Call GetSportBoardTool with sport="NBA". Evaluate ONLY the "Blocks (player prop)" \
+                    market group for today's games — ignore every other player-prop category, those are \
+                    covered by separate tasks. Back every single prop with GetPlayerRecentStatsTool for \
+                    that player's last ~10 games — state plainly how many actually cleared the specific \
+                    threshold Kalshi is pricing. Do not recommend one you haven't pulled recent game logs \
+                    for."""),
+            new CategoryTemplate("NBA", "NBA — Threes Made", """
+                    Call GetSportBoardTool with sport="NBA". Evaluate ONLY the "Threes Made (player prop)" \
+                    market group for today's games — ignore every other player-prop category, those are \
+                    covered by separate tasks. Back every single prop with GetPlayerRecentStatsTool for \
+                    that player's last ~10 games — state plainly how many actually cleared the specific \
+                    threshold Kalshi is pricing. Do not recommend one you haven't pulled recent game logs \
+                    for."""),
             new CategoryTemplate("NCAAMB", "NCAA Men's Basketball", """
                     Call GetSportBoardTool with sport="NCAAMB". Evaluate EVERY market group it returns for \
                     today's games — Moneyline, Spread, Point Total, and Team Total (no individual player \
@@ -149,13 +232,41 @@ public class ValuePlayScheduler {
                     returns for today's games — Moneyline, Spread, Point Total (goals), and Team Total — \
                     not just Moneyline. Back every play with standings/head-to-head/recent scoring trend \
                     (GetTeamAnalyticsTool + GetTeamRecentFormTool, ESPN sport="hockey", league="nhl")."""),
-            new CategoryTemplate("NHL", "NHL — Player/Game Props", """
-                    Call GetSportBoardTool with sport="NHL". Evaluate EVERY player-prop market group it \
-                    returns for today's games — goals, points, assists, goaltender saves, first \
-                    goalscorer — plus the "Goal in First 10 Minutes" game prop. Back every single player \
-                    prop with GetPlayerRecentStatsTool for that player's last ~10 games (goaltenders too, \
-                    for saves) — do not recommend a player prop you haven't pulled recent game logs for. \
-                    Back the first-10-minutes game prop with both teams' recent scoring trend.""")
+            new CategoryTemplate("NHL", "NHL — Goals", """
+                    Call GetSportBoardTool with sport="NHL". Evaluate ONLY the "Goals (player prop)" \
+                    market group for today's games — ignore every other player/game-prop category, those \
+                    are covered by separate tasks. Back every single prop with GetPlayerRecentStatsTool \
+                    for that player's last ~10 games — do not recommend one you haven't pulled recent \
+                    game logs for."""),
+            new CategoryTemplate("NHL", "NHL — Points", """
+                    Call GetSportBoardTool with sport="NHL". Evaluate ONLY the "Points (player prop)" \
+                    market group for today's games — ignore every other player/game-prop category, those \
+                    are covered by separate tasks. Back every single prop with GetPlayerRecentStatsTool \
+                    for that player's last ~10 games — do not recommend one you haven't pulled recent \
+                    game logs for."""),
+            new CategoryTemplate("NHL", "NHL — Assists", """
+                    Call GetSportBoardTool with sport="NHL". Evaluate ONLY the "Assists (player prop)" \
+                    market group for today's games — ignore every other player/game-prop category, those \
+                    are covered by separate tasks. Back every single prop with GetPlayerRecentStatsTool \
+                    for that player's last ~10 games — do not recommend one you haven't pulled recent \
+                    game logs for."""),
+            new CategoryTemplate("NHL", "NHL — Goaltender Saves", """
+                    Call GetSportBoardTool with sport="NHL". Evaluate ONLY the "Goaltender Saves (player \
+                    prop)" market group for today's games — ignore every other player/game-prop category, \
+                    those are covered by separate tasks. Back every single prop with \
+                    GetPlayerRecentStatsTool for that goaltender's last ~10 games — do not recommend one \
+                    you haven't pulled recent game logs for."""),
+            new CategoryTemplate("NHL", "NHL — First Goalscorer", """
+                    Call GetSportBoardTool with sport="NHL". Evaluate ONLY the "First Goalscorer (player \
+                    prop)" market group for today's games — ignore every other player/game-prop category, \
+                    those are covered by separate tasks. Back every single prop with \
+                    GetPlayerRecentStatsTool for that player's last ~10 games — do not recommend one you \
+                    haven't pulled recent game logs for."""),
+            new CategoryTemplate("NHL", "NHL — Goal in First 10 Minutes", """
+                    Call GetSportBoardTool with sport="NHL". Evaluate ONLY the "Goal in First 10 Minutes \
+                    (game prop)" market group for today's games — ignore every other player/game-prop \
+                    category, those are covered by separate tasks. Back each one with both teams' recent \
+                    scoring trend (GetTeamRecentFormTool).""")
     );
 
     /** Shared instruction appended to every sport task. Same-day-only and output-brevity rules already

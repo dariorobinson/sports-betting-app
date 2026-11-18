@@ -15,12 +15,16 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
 ## How it works
 
 - Every morning (7:30am America/Chicago by default), [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
-  runs one independent research task per (sport, market-category) pair — 11 tasks on a normal day:
-  game lines and props researched separately for CFB/Soccer/NFL/NBA/NHL, plus one for NCAA Men's
-  Basketball (game lines only — no player props exist for that sport on Kalshi). Splitting lines from
-  props, not just splitting by sport, is what actually gets full coverage in one autonomous run
-  instead of requiring manual follow-up chat questions (confirmed in production: one call per sport
-  reliably researched only ONE category, not both). On top of that, every category's actual game
+  runs one independent research task per (sport, individual market/stat type) — 30 tasks on a normal
+  day: game lines researched separately from each individual prop type for CFB/Soccer/NFL/NBA/NHL
+  (e.g. NBA alone splits into Points/Rebounds/Assists/Steals/Blocks/Threes Made as 6 separate tasks,
+  not one bundled "player props" task), plus one for NCAA Men's Basketball (game lines only — no
+  player props exist for that sport on Kalshi). Splitting this granularly — not just lines from props,
+  but each individual stat type from every other one — is what actually gets full coverage in one
+  autonomous run instead of requiring manual follow-up chat questions: confirmed in production twice,
+  first that one call per sport reliably researched only ONE category (lines OR props, not both), then
+  that even a single "player props" task bundling 5-6 stat types reliably wrote up plays for only ONE
+  of them (e.g. NBA Points) and silently never got to the rest. On top of that, every task's actual game
   count for today is checked fresh each run — a cheap,
   deterministic lookup with no model call
   ([`ValuePlayScheduler.buildTasksForToday`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java),
