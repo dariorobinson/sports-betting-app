@@ -2,6 +2,7 @@ package com.kalshi.betting.scheduler;
 
 import com.kalshi.betting.discord.DiscordMessages;
 import com.kalshi.betting.orchestrator.OrchestratorService;
+import com.kalshi.betting.service.SportsCatalogService;
 import net.dv8tion.jda.api.JDA;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,7 +11,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Daily, fully autonomous "value play" research report — this app's entire remaining purpose. Does
@@ -19,12 +24,20 @@ import java.util.List;
  * user can decide and bet manually.
  * <p>
  * Runs one independent {@link OrchestratorService#chatOnce} call per (sport, market-category) task
- * (see {@link #SPORT_TASKS}) rather than one giant survey across everything, or even one call per
- * sport — both of those reliably produced only partial coverage in production (a single sport-wide
- * call would research game lines OR player props, never both, leaving the user to manually ask
- * follow-up chat questions for the rest, defeating the point of an autonomous scheduled report).
- * Scoping each call to one narrow (sport, category) slice gives it a full iteration budget of its
- * own and keeps each individual research task small enough to actually exhaust. Every play is
+ * (see {@link #CATEGORY_TEMPLATES}) rather than one giant survey across everything, or even one call
+ * per sport — both of those reliably produced only partial coverage in production (a single
+ * sport-wide call would research game lines OR player props, never both, leaving the user to
+ * manually ask follow-up chat questions for the rest, defeating the point of an autonomous scheduled
+ * report). Scoping each call to one narrow (sport, category) slice gives it a full iteration budget
+ * of its own and keeps each individual research task small enough to actually exhaust.
+ * <p>
+ * How many actual tasks a template turns into is decided FRESH each run by {@link #buildTasksForToday()}
+ * based on today's real game count per sport — a fixed one-task-per-category count was still not
+ * enough on a busy day: confirmed in production that soccer's 14 combined competitions needed
+ * splitting by competition cluster, and a follow-up chat question routinely surfaced a real play that
+ * a single oversized scheduled task had missed. The same dynamic split now applies to every sport, not
+ * just soccer — a quiet day still runs its normal small task count, a busy one gets more, narrower
+ * sub-tasks instead of asking one task to go deep on more games than it reliably can. Every play is
  * same-day only (see {@code docs/instructions.md}) — this is a same-day research tool, not a
  * multi-day/swing-trade one.
  */
@@ -42,75 +55,101 @@ public class ValuePlayScheduler {
      *  report should never require. Splitting each sport's game-lines and props into separate tasks
      *  gives each one its own full tool-iteration budget and a narrow enough scope to actually
      *  exhaust, the same fix already applied once before at the sport level (see the class javadoc).
-     *  Same-day only (see {@link #VALUE_METHODOLOGY}) means the pool per task is naturally bounded to
-     *  a single day's slate, so each prompt asks for AS MANY plays as genuinely clear the bar rather
-     *  than a fixed small count. */
-    private record SportTask(String label, String prompt) {
+     *  {@code assignedGames} is the exact game list this task is responsible for (the whole slate for
+     *  an unsplit task, one chunk for a split one) — kept so {@link #runResearch()} can check the
+     *  model's own GAMES_CHECKED confirmation against it afterward and log a warning if any assigned
+     *  game went unreported, rather than just trusting the "evaluate every game" instruction blindly. */
+    private record SportTask(String label, String prompt, List<String> assignedGames) {
     }
 
-    private static final List<SportTask> SPORT_TASKS = List.of(
-            new SportTask("College Football — Game Lines", """
+    /** One (sport key, category) template — the fixed instruction body for a research category,
+     *  BEFORE deciding how many actual {@link SportTask}s it turns into for today (see
+     *  {@link #buildTasksForToday}). Kept separate from {@code SportTask} itself because the same
+     *  template can produce one task on a quiet day or several on a busy one. */
+    private record CategoryTemplate(String sportKey, String label, String prompt) {
+    }
+
+    /** Above this many games today, a category template is split into multiple {@link SportTask}s,
+     *  each scoped to a named subset of games, instead of one task trying to cover the whole slate in
+     *  depth — confirmed in production that an oversized single task (first seen with soccer's 14
+     *  combined competitions, up to 55 series in one call) reliably goes shallow on part of the board.
+     *  8 is a starting heuristic (not an empirically measured ceiling) matched to the busiest normal
+     *  night for NFL/NBA/NHL — tune it if a specific sport still comes up short at this size. */
+    private static final int GAMES_PER_TASK_THRESHOLD = 8;
+    /** Hard cap on how many sub-tasks one category template can split into, regardless of game count —
+     *  without this, a 90+ game College Football Saturday would divide into a dozen-plus tasks at the
+     *  threshold above. Busy sports instead get a few bigger chunks rather than many tiny ones. */
+    private static final int MAX_SPLIT_PARTS = 4;
+    /** Matches the "GAMES_CHECKED: ..." line every task is asked to append (see
+     *  {@link #VALUE_METHODOLOGY}) — the one piece of structured, machine-checkable signal about
+     *  which games a task's response actually covered, since the required play-list format itself
+     *  deliberately says nothing about games that didn't produce a play (see
+     *  {@code docs/instructions.md}'s "say nothing about it" rule), which otherwise makes coverage
+     *  unverifiable from the visible report alone. */
+    private static final Pattern GAMES_CHECKED_PATTERN = Pattern.compile("(?m)^GAMES_CHECKED:\\s*(.*)$");
+
+    private static final List<CategoryTemplate> CATEGORY_TEMPLATES = List.of(
+            new CategoryTemplate("NCAAF", "College Football — Game Lines", """
                     Call GetSportBoardTool with sport="NCAAF". Evaluate EVERY game-line market group it \
                     returns for today's games — Moneyline, Spread, Point Total, and Team Total — not just \
                     Moneyline. Pull both teams' recent scoring trend (GetTeamRecentFormTool), not just \
                     their season-aggregate record."""),
-            new SportTask("College Football — Team Props", """
+            new CategoryTemplate("NCAAF", "College Football — Team Props", """
                     Call GetSportBoardTool with sport="NCAAF". Evaluate EVERY team-level game-prop market \
                     group it returns for today's games — team touchdowns, team rushing yards, team \
                     receiving yards, team sacks, team interceptions (no individual player props exist for \
                     this sport on Kalshi). Pull both teams' recent scoring/stat trend \
                     (GetTeamRecentFormTool) to back each one, not just their season-aggregate record."""),
-            new SportTask("Soccer — Game Lines", """
-                    Call GetSportBoardTool with sport="SOCCER" (all 14 soccer competitions in one call — \
-                    domestic leagues, national-team competitions, and continental club/confederation \
-                    competitions). Evaluate EVERY \
-                    game-line market group for today's games — Moneyline, Spread, Point Total, and Team \
-                    Total (note: Team Total doesn't exist for CONCACAFNL — skip it only for that one) — \
-                    not just one market type. Apply extra scrutiny to Moneyline specifically \
-                    (soccer's draw outcome makes it a structurally weaker fit than a clean over/under \
-                    line), but don't skip it outright if the data shows a real gap. Pull recent form \
-                    (GetTeamRecentFormTool) and head-to-head for both teams."""),
-            new SportTask("Soccer — Player/Game Props", """
-                    Call GetSportBoardTool with sport="SOCCER" (all 14 soccer competitions in one call). Evaluate EVERY \
-                    Anytime Goalscorer and Both Teams to Score market group for today's games across all \
-                    competitions (note: Anytime Goalscorer doesn't exist for UEL, UECL, CONMEBOLLIB, \
-                    CONMEBOLSUD, or CONCACAFNL — just skip it for those, Both Teams to Score still applies). \
-                    Back goalscorer props with the player's recent scoring form; back Both \
-                    Teams to Score with both teams' recent scoring/conceding trend (GetTeamRecentFormTool)."""),
-            new SportTask("NFL — Game Lines", """
+            new CategoryTemplate("SOCCER", "Soccer — Game Lines", """
+                    Call GetSportBoardTool with sport="SOCCER" (all 14 soccer competitions in one call). \
+                    Evaluate EVERY game-line market group for today's games — Moneyline, Spread, Point \
+                    Total, and Team Total (note: Team Total doesn't exist for CONCACAFNL — skip it only \
+                    for that one) — not just one market type. Apply extra scrutiny to Moneyline \
+                    specifically (soccer's draw outcome makes it a structurally weaker fit than a clean \
+                    over/under line), but don't skip it outright if the data shows a real gap. Pull \
+                    recent form (GetTeamRecentFormTool) and head-to-head for both teams."""),
+            new CategoryTemplate("SOCCER", "Soccer — Player/Game Props", """
+                    Call GetSportBoardTool with sport="SOCCER" (all 14 soccer competitions in one call). \
+                    Evaluate EVERY Anytime Goalscorer and Both Teams to Score market group for today's \
+                    games across all competitions (note: Anytime Goalscorer doesn't exist for UEL, UECL, \
+                    CONMEBOLLIB, CONMEBOLSUD, or CONCACAFNL — just skip it for those, Both Teams to Score \
+                    still applies). Back goalscorer props with the player's recent scoring form; back \
+                    Both Teams to Score with both teams' recent scoring/conceding trend \
+                    (GetTeamRecentFormTool)."""),
+            new CategoryTemplate("NFL", "NFL — Game Lines", """
                     Call GetSportBoardTool with sport="NFL". Evaluate EVERY game-line market group it \
                     returns for today's games — Moneyline, Spread, Point Total, and Team Total — not just \
                     Moneyline. Back every play with standings/head-to-head/recent form \
                     (GetTeamAnalyticsTool + GetTeamRecentFormTool)."""),
-            new SportTask("NFL — Player Props", """
+            new CategoryTemplate("NFL", "NFL — Player Props", """
                     Call GetSportBoardTool with sport="NFL". Evaluate EVERY player-prop market group it \
                     returns for today's games — passing yards, rushing yards, receptions, receiving yards, \
                     passing touchdowns. Back every single player prop with GetPlayerRecentStatsTool for \
                     that player's last ~10 games — do not recommend a player prop you haven't pulled \
                     recent game logs for."""),
-            new SportTask("NBA — Game Lines", """
+            new CategoryTemplate("NBA", "NBA — Game Lines", """
                     Call GetSportBoardTool with sport="NBA". Evaluate EVERY game-line market group it \
                     returns for today's games — Moneyline, Spread, Point Total, and Team Total — not just \
                     Moneyline. Back every play with GetTeamAnalyticsTool/GetTeamRecentFormTool."""),
-            new SportTask("NBA — Player Props", """
+            new CategoryTemplate("NBA", "NBA — Player Props", """
                     Call GetSportBoardTool with sport="NBA". Evaluate EVERY player-prop market group it \
                     returns for today's games — points, rebounds, assists, steals, blocks, threes made. \
                     Back every single player prop with GetPlayerRecentStatsTool for that player's last ~10 \
                     games — state plainly how many actually cleared the specific threshold Kalshi is \
                     pricing. Do not recommend a player prop you haven't pulled recent game logs for."""),
-            new SportTask("NCAA Men's Basketball", """
+            new CategoryTemplate("NCAAMB", "NCAA Men's Basketball", """
                     Call GetSportBoardTool with sport="NCAAMB". Evaluate EVERY market group it returns for \
                     today's games — Moneyline, Spread, Point Total, and Team Total (no individual player \
                     props exist for this sport on Kalshi). Back every play with recent scoring form \
                     (GetTeamRecentFormTool, ESPN league slug "mens-college-basketball") — early season \
                     means limited sample sizes, so say so plainly when a team's recent-form read is thin \
                     rather than overstating confidence."""),
-            new SportTask("NHL — Game Lines", """
+            new CategoryTemplate("NHL", "NHL — Game Lines", """
                     Call GetSportBoardTool with sport="NHL". Evaluate EVERY game-line market group it \
                     returns for today's games — Moneyline, Spread, Point Total (goals), and Team Total — \
                     not just Moneyline. Back every play with standings/head-to-head/recent scoring trend \
                     (GetTeamAnalyticsTool + GetTeamRecentFormTool, ESPN sport="hockey", league="nhl")."""),
-            new SportTask("NHL — Player/Game Props", """
+            new CategoryTemplate("NHL", "NHL — Player/Game Props", """
                     Call GetSportBoardTool with sport="NHL". Evaluate EVERY player-prop market group it \
                     returns for today's games — goals, points, assists, goaltender saves, first \
                     goalscorer — plus the "Goal in First 10 Minutes" game prop. Back every single player \
@@ -139,16 +178,27 @@ public class ValuePlayScheduler {
             walkthrough comparing candidates before picking winners, mid-sentence self-correction ("let me \
             restate... actually..."), a fake play entry for a market you're SKIPPING (e.g. "N/A ... \
             Skipped: no real edge"), and any closing mention of what else you checked but didn't include. \
-            If you're not recommending it, it must leave zero trace in the response.""";
+            If you're not recommending it, it must leave zero trace in the response.
+
+            After everything else above (the play list or the "no plays" sentence), add exactly one \
+            more line, for internal logging only — it is never shown to the user, so it doesn't need to \
+            read naturally, it just needs to match this format exactly: \
+            "GAMES_CHECKED: {game1}; {game2}; ..." listing EVERY game from today's slate you actually \
+            evaluated for this task (whether or not it produced a recommended play), using the same \
+            team-matchup names given to you. This is how coverage gets verified after the fact — do not \
+            list a game you didn't genuinely check.""";
 
     private final ObjectProvider<JDA> jdaProvider;
     private final OrchestratorService orchestratorService;
+    private final SportsCatalogService sportsCatalogService;
     private final String authorizedUserId;
 
     public ValuePlayScheduler(ObjectProvider<JDA> jdaProvider, OrchestratorService orchestratorService,
+                               SportsCatalogService sportsCatalogService,
                                @Value("${discord.authorized-user-id}") String authorizedUserId) {
         this.jdaProvider = jdaProvider;
         this.orchestratorService = orchestratorService;
+        this.sportsCatalogService = sportsCatalogService;
         this.authorizedUserId = authorizedUserId;
     }
 
@@ -180,21 +230,24 @@ public class ValuePlayScheduler {
     }
 
     /**
-     * The actual research cycle — every task in {@link #SPORT_TASKS} run independently, combined into
-     * one report — with NO side effect (no Discord DM). Exists as its own method specifically so a
-     * tool-triggered on-demand run (see {@code RunFullSlateResearchTool}) can get the report text back
-     * as a normal tool result and let the already-in-progress chat turn deliver it once, rather than
-     * this method ALSO pushing a separate DM (which {@link #execute()} does, for the cases where
-     * there's no live chat turn to deliver through — the cron and the manual REST trigger).
+     * The actual research cycle — every task {@link #buildTasksForToday()} decides is needed today,
+     * run independently and combined into one report — with NO side effect (no Discord DM). Exists as
+     * its own method specifically so a tool-triggered on-demand run (see {@code RunFullSlateResearchTool})
+     * can get the report text back as a normal tool result and let the already-in-progress chat turn
+     * deliver it once, rather than this method ALSO pushing a separate DM (which {@link #execute()}
+     * does, for the cases where there's no live chat turn to deliver through — the cron and the
+     * manual REST trigger).
      */
     public String runResearch() {
+        List<SportTask> tasks = buildTasksForToday();
         StringBuilder report = new StringBuilder("Today's value plays\n");
-        for (SportTask task : SPORT_TASKS) {
+        for (SportTask task : tasks) {
             log.info("Value-play research starting for {}", task.label());
             String result;
             try {
                 result = orchestratorService.chatOnce("value-plays-" + task.label(),
                         task.prompt() + VALUE_METHODOLOGY, OrchestratorService.VALUE_PLAY_TOOL_CLASSES);
+                result = verifyAndStripGamesChecked(task, result);
             } catch (Exception e) {
                 log.error("Value-play research failed for {}", task.label(), e);
                 result = "Research failed: " + e.getMessage();
@@ -203,6 +256,99 @@ public class ValuePlayScheduler {
             report.append("\n").append(task.label()).append("\n").append(result).append("\n");
         }
         return report.toString();
+    }
+
+    /**
+     * Turns each {@link #CATEGORY_TEMPLATES} entry into one or more {@link SportTask}s for TODAY
+     * specifically, based on how many games that sport/competition-cluster actually has today — a
+     * cheap, deterministic Java-side check ({@link SportsCatalogService#listTodaysGameMatchups}, no
+     * LLM call) run BEFORE any research starts. A quiet day (at or under
+     * {@link #GAMES_PER_TASK_THRESHOLD} games) gets exactly the one task it always got; a busy one
+     * gets split into up to {@link #MAX_SPLIT_PARTS} sub-tasks, each told to evaluate ONLY a named
+     * subset of today's games, so no single task is asked to go deep on more games than it reliably
+     * can. If the game-count lookup itself fails for a sport, fall back to a single unsplit task
+     * rather than losing that sport's research entirely for the day.
+     */
+    private List<SportTask> buildTasksForToday() {
+        List<SportTask> tasks = new ArrayList<>();
+        for (CategoryTemplate template : CATEGORY_TEMPLATES) {
+            List<String> games;
+            try {
+                games = sportsCatalogService.listTodaysGameMatchups(template.sportKey());
+            } catch (Exception e) {
+                log.warn("Could not look up today's game count for {} ({}) — running it as a single "
+                        + "unsplit task instead of deciding how to split it.", template.sportKey(), e.getMessage());
+                tasks.add(new SportTask(template.label(), template.prompt(), List.of()));
+                continue;
+            }
+
+            if (games.size() <= GAMES_PER_TASK_THRESHOLD) {
+                tasks.add(new SportTask(template.label(), template.prompt(), games));
+                continue;
+            }
+
+            int parts = Math.min(MAX_SPLIT_PARTS,
+                    (int) Math.ceil(games.size() / (double) GAMES_PER_TASK_THRESHOLD));
+            List<List<String>> chunks = partition(games, parts);
+            log.info("{} has {} games today — splitting into {} sub-tasks", template.sportKey(), games.size(), chunks.size());
+            for (int i = 0; i < chunks.size(); i++) {
+                String label = template.label() + " (" + (i + 1) + "/" + chunks.size() + ")";
+                List<String> chunk = chunks.get(i);
+                String scopedPrompt = template.prompt() + """
+
+
+                        Today's slate for this sport/competition is unusually busy (%d games total) — \
+                        this task covers ONLY these specific games, a separate task covers the rest, so \
+                        focus your full depth on just these: %s.""".formatted(games.size(), String.join("; ", chunk));
+                tasks.add(new SportTask(label, scopedPrompt, chunk));
+            }
+        }
+        return tasks;
+    }
+
+    /** Splits {@code items} into {@code numParts} contiguous, roughly-equal-sized chunks (last one
+     *  absorbs any remainder) — used to divide a busy sport's games across several sub-tasks. */
+    private static List<List<String>> partition(List<String> items, int numParts) {
+        List<List<String>> chunks = new ArrayList<>();
+        int chunkSize = (int) Math.ceil(items.size() / (double) numParts);
+        for (int i = 0; i < items.size(); i += chunkSize) {
+            chunks.add(items.subList(i, Math.min(i + chunkSize, items.size())));
+        }
+        return chunks;
+    }
+
+    /**
+     * Checks the task's self-reported "GAMES_CHECKED: ..." line (see {@link #VALUE_METHODOLOGY})
+     * against the games it was actually assigned, logs a warning for any assigned game that line
+     * doesn't mention, and strips the line out of the text before it's returned — it's an internal
+     * signal for this check, never meant to reach the Discord report. Logging only, by design: this
+     * doesn't block or retry anything, it just gives visibility into whether a task's "evaluate every
+     * game" instruction is actually being followed instead of trusting it blindly.
+     */
+    private String verifyAndStripGamesChecked(SportTask task, String result) {
+        Matcher matcher = GAMES_CHECKED_PATTERN.matcher(result);
+        if (!matcher.find()) {
+            if (!task.assignedGames().isEmpty()) {
+                log.warn("Value-play research for {} didn't report a GAMES_CHECKED line — can't verify "
+                        + "it actually covered its {} assigned game(s): {}",
+                        task.label(), task.assignedGames().size(), task.assignedGames());
+            }
+            return result;
+        }
+
+        String checkedLower = matcher.group(1).toLowerCase(Locale.ROOT);
+        List<String> missed = task.assignedGames().stream()
+                .filter(game -> !checkedLower.contains(game.toLowerCase(Locale.ROOT)))
+                .toList();
+        if (!missed.isEmpty()) {
+            log.warn("Value-play research for {} did not report checking {} of its {} assigned game(s): {}",
+                    task.label(), missed.size(), task.assignedGames().size(), missed);
+        } else if (!task.assignedGames().isEmpty()) {
+            log.info("Value-play research for {} confirmed checking all {} assigned game(s)",
+                    task.label(), task.assignedGames().size());
+        }
+
+        return matcher.replaceFirst("").stripTrailing();
     }
 
     private void notifyUser(JDA jda, String message) {

@@ -137,6 +137,37 @@ public class SportsCatalogService {
         return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups, trends, playerStats, weather);
     }
 
+    /**
+     * Today's games for a sport/competition-cluster, as plain "{Team A} vs {Team B}" title strings —
+     * a cheap, deterministic (no LLM call) lookup so {@code ValuePlayScheduler} can decide BEFORE
+     * spending any model calls whether a sport's slate is busy enough today to need splitting into
+     * more than one research task, rather than always running a fixed number of tasks regardless of
+     * how many games actually landed on a given day. Collects from every "...GAME" (Moneyline) series
+     * in the sport's registry entry, which for a multi-competition aggregate key like "SOCCER" means
+     * one series per competition (14 of them), not just one.
+     */
+    public List<String> listTodaysGameMatchups(String sportKey) {
+        List<SportMarketRegistry.SeriesEntry> registry = SportMarketRegistry.lookup(sportKey);
+        if (registry == null) {
+            throw new IllegalArgumentException("Unknown sport \"" + sportKey + "\" — known keys: "
+                    + SportMarketRegistry.knownKeys());
+        }
+        List<String> matchups = new ArrayList<>();
+        for (SportMarketRegistry.SeriesEntry entry : registry) {
+            if (!entry.seriesTicker().endsWith("GAME")) {
+                continue;
+            }
+            try {
+                for (GameSummary game : listGames(entry.seriesTicker())) {
+                    matchups.add(game.title());
+                }
+            } catch (RuntimeException e) {
+                log.warn("listTodaysGameMatchups: fetching {} failed: {}", entry.seriesTicker(), e.getMessage());
+            }
+        }
+        return matchups;
+    }
+
     /** ESPN sport slugs where weather can realistically affect a game — basketball (NBA/NCAAMB) and
      *  hockey (NHL) are always indoor, so weather is skipped entirely for those, never fetched. */
     private static final java.util.Set<String> OUTDOOR_ESPN_SPORTS = java.util.Set.of("football", "soccer");

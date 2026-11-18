@@ -78,7 +78,8 @@ public class OrchestratorService {
      *  and adds resilience when a single turn emits many tool-result blocks. */
     private static final int SLIDING_BREAKPOINTS = 2;
 
-    /** Tool set for the daily value-play scheduler's 9 per-(sport, category) research tasks (see
+    /** Tool set for the daily value-play scheduler's per-(sport, category) research tasks — 11 on a
+     *  normal day, automatically more if a sport's slate is unusually busy (see
      *  {@code ValuePlayScheduler}) — deliberately does NOT include {@link RunFullSlateResearchTool},
      *  which itself runs this exact same set of tasks; including it here would let a sub-task
      *  recursively re-trigger the whole cycle. */
@@ -417,10 +418,24 @@ public class OrchestratorService {
      * to follow in isolation than "analyze N candidates and never narrate" in the same turn. Skipped
      * (no extra API call) when the draft plainly isn't a play list at all.
      */
+    /** Matches the trailing "GAMES_CHECKED: ..." line {@code ValuePlayScheduler} asks every research
+     *  task to append, for internal coverage-verification logging — never meant for the user. It
+     *  would otherwise read to this method as exactly the kind of stray non-play-list text it's told
+     *  to strip, so it's pulled out before sanitizing and reattached after, rather than teaching this
+     *  generic cleanup pass about a scheduler-specific concern. */
+    private static final java.util.regex.Pattern GAMES_CHECKED_LINE =
+            java.util.regex.Pattern.compile("(?m)^GAMES_CHECKED:.*$\\n?");
+
     private String sanitizePlaysResponse(String rawResponse) {
         if (rawResponse.isBlank() || !rawResponse.contains("Plays for ")) {
             return rawResponse;
         }
+
+        java.util.regex.Matcher gamesCheckedMatch = GAMES_CHECKED_LINE.matcher(rawResponse);
+        String gamesCheckedLine = gamesCheckedMatch.find() ? gamesCheckedMatch.group() : null;
+        String toSanitize = gamesCheckedLine == null ? rawResponse
+                : gamesCheckedMatch.replaceFirst("").stripTrailing();
+
         String prompt = """
                 Below is a draft response that's supposed to contain ONLY a sports value-play list, but \
                 earlier drafts from this same system have sometimes leaked extra text around it: opening \
@@ -439,7 +454,7 @@ public class OrchestratorService {
                 them. If the draft already has none of that leakage, return it byte-for-byte unchanged.
 
                 Draft:
-                %s""".formatted(rawResponse);
+                %s""".formatted(toSanitize);
 
         MessageCreateParams params = MessageCreateParams.builder()
                 .model(MODEL)
@@ -457,11 +472,11 @@ public class OrchestratorService {
         if (cleaned.isBlank()) {
             return rawResponse;
         }
-        if (!cleaned.equals(rawResponse)) {
+        if (!cleaned.equals(toSanitize)) {
             log.info("Sanitized narration/scratch-work out of a play-list response ({} chars -> {} chars)",
-                    rawResponse.length(), cleaned.length());
+                    toSanitize.length(), cleaned.length());
         }
-        return cleaned;
+        return gamesCheckedLine == null ? cleaned : cleaned + "\n\n" + gamesCheckedLine.strip();
     }
 
     /** Rebuilds the accumulated conversation with NO tools attached and a blunt "stop researching,

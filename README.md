@@ -15,12 +15,25 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
 ## How it works
 
 - Every morning (7:30am America/Chicago by default), [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
-  runs one independent research task per (sport, market-category) pair — 11 tasks total: game lines
-  and props researched separately for CFB/Soccer/NFL/NBA/NHL, plus one for NCAA Men's Basketball (game
-  lines only — no player props exist for that sport on Kalshi). Splitting lines from props, not just
-  splitting by sport, is what actually gets full coverage in one autonomous run instead of requiring
-  manual follow-up chat questions (confirmed in production: one call per sport reliably researched
-  only ONE category, not both). Each task lets Claude pull every relevant market series in one call
+  runs one independent research task per (sport, market-category) pair — 11 tasks on a normal day:
+  game lines and props researched separately for CFB/Soccer/NFL/NBA/NHL, plus one for NCAA Men's
+  Basketball (game lines only — no player props exist for that sport on Kalshi). Splitting lines from
+  props, not just splitting by sport, is what actually gets full coverage in one autonomous run
+  instead of requiring manual follow-up chat questions (confirmed in production: one call per sport
+  reliably researched only ONE category, not both). On top of that, every category's actual game
+  count for today is checked fresh each run — a cheap,
+  deterministic lookup with no model call
+  ([`ValuePlayScheduler.buildTasksForToday`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java),
+  backed by [`SportsCatalogService.listTodaysGameMatchups`](src/main/java/com/kalshi/betting/service/SportsCatalogService.java))
+  — any sport/category having an unusually busy day (more games than one task can realistically go
+  deep on) automatically gets split into a few extra sub-tasks, each scoped to a named subset of that
+  day's games, so coverage doesn't degrade on the heaviest slates. This applies uniformly to every
+  sport, including soccer — there's no special-cased clustering for any one sport; a quiet day for a
+  sport still runs its normal single task, a busy one gets however many extra sub-tasks its own game
+  count calls for (confirmed in production: a single combined soccer task, spanning all 14
+  competitions, missed a real play that a follow-up chat question then found — this dynamic splitting
+  is the general-purpose fix for that, not a soccer-only one). Each task lets
+  Claude pull every relevant market series in one call
   ([`GetSportBoardTool`](src/main/java/com/kalshi/betting/orchestrator/tool/GetSportBoardTool.java),
   backed by the curated [`SportMarketRegistry`](src/main/java/com/kalshi/betting/service/SportMarketRegistry.java)),
   pull real stats from ESPN ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the
@@ -30,7 +43,7 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
   for the exact methodology/format the model follows.
 - You can also just DM the bot directly any time — a scoped request ("find me some value plays in
   the NBA tonight", "what's Kalshi pricing the Chiefs game at") is researched inline in that one
-  chat turn; a genuinely unscoped "give me every possible play today" triggers the same 9-task cycle
+  chat turn; a genuinely unscoped "give me every possible play today" triggers the same scheduled-report cycle
   as the scheduled report on demand (`RunFullSlateResearchTool`), since one chat turn can't reliably
   research every sport and category itself — see `docs/instructions.md` for the exact routing rule.
 - **Auth**: Kalshi requires every private-endpoint request (order books, settlement history) to
