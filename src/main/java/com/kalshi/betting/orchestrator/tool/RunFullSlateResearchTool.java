@@ -8,11 +8,13 @@ import org.slf4j.LoggerFactory;
 import java.util.function.Supplier;
 
 @JsonClassDescription("Use this ONLY when the user asks for ALL/EVERY possible play across every "
-        + "sport today, with no specific sport, league, team, or market category mentioned (e.g. "
-        + "'give me all possible plays for today', 'what's good today', 'send me everything'). Do "
-        + "NOT use this for a scoped request — a specific sport ('NBA plays'), a specific category "
-        + "('player props'), or a specific team ('what about the Lakers tonight') should still be "
-        + "researched directly yourself with GetSportBoardTool etc., exactly as before. Trying to "
+        + "sport today, with no specific sport mentioned (e.g. 'give me all possible plays for today', "
+        + "'what's good today', 'send me everything'). A request scoped to ONE whole sport ('NBA "
+        + "plays', 'NFL player props') should use RunSportResearchTool instead — same underlying "
+        + "problem (one turn can't reliably cover every market/stat type), just scoped to one sport "
+        + "rather than all of them. Only a request narrower than a whole sport — a specific team "
+        + "('what about the Lakers tonight'), a specific player's prop, or a specific single game — "
+        + "should still be researched directly yourself with GetSportBoardTool etc. Trying to "
         + "research every sport and every market category yourself in one pass is NOT reliable — "
         + "confirmed in production, a single turn asked for 'everything' only actually researched "
         + "one category (NBA player props) and gave every other sport/category a token pass before "

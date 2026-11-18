@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
  * report). Scoping each call to one narrow (sport, category) slice gives it a full iteration budget
  * of its own and keeps each individual research task small enough to actually exhaust.
  * <p>
- * How many actual tasks a template turns into is decided FRESH each run by {@link #buildTasksForToday()}
+ * How many actual tasks a template turns into is decided FRESH each run by {@link #buildTasksForToday(java.util.List)}
  * based on today's real game count per sport — a fixed one-task-per-category count was still not
  * enough on a busy day: confirmed in production that soccer's 14 combined competitions needed
  * splitting by competition cluster, and a follow-up chat question routinely surfaced a real play that
@@ -318,7 +318,7 @@ public class ValuePlayScheduler {
         execute();
     }
 
-    /** Runs the full research cycle (every task in {@link #SPORT_TASKS}) and DMs the combined
+    /** Runs the full research cycle (every task in {@link #CATEGORY_TEMPLATES}) and DMs the combined
      *  report; also returns the report text so a manual trigger (see {@code ValuePlayController})
      *  can show the result directly. For an on-demand run triggered FROM a Discord chat turn (see
      *  {@code RunFullSlateResearchTool}), call {@link #runResearch()} instead — that variant doesn't
@@ -341,7 +341,7 @@ public class ValuePlayScheduler {
     }
 
     /**
-     * The actual research cycle — every task {@link #buildTasksForToday()} decides is needed today,
+     * The actual research cycle — every task {@link #buildTasksForToday(java.util.List)} decides is needed today,
      * run independently and combined into one report — with NO side effect (no Discord DM). Exists as
      * its own method specifically so a tool-triggered on-demand run (see {@code RunFullSlateResearchTool})
      * can get the report text back as a normal tool result and let the already-in-progress chat turn
@@ -350,7 +350,42 @@ public class ValuePlayScheduler {
      * manual REST trigger).
      */
     public String runResearch() {
-        List<SportTask> tasks = buildTasksForToday();
+        return runTasks(buildTasksForToday(CATEGORY_TEMPLATES));
+    }
+
+    /**
+     * The same per-(sport, individual market/stat type) research cycle as {@link #runResearch()}, but
+     * scoped to ONE sport (e.g. "NBA") instead of every sport — for a Discord chat request that asks
+     * for a whole sport's plays (see {@code RunSportResearchTool}). Answering that kind of request
+     * inline in one chat turn has the same under-coverage failure the scheduled report itself used to
+     * have: one turn asked to cover a sport's game lines AND every individual prop type (NBA alone has
+     * 6) reliably only writes up ONE of them (confirmed in production, repeatedly, for NBA Points
+     * specifically) and silently never gets to the rest. Routing a whole-sport request through this
+     * same multi-task machinery — instead of one unscoped GetSportBoardTool-driven turn — is the fix,
+     * matching the "split further, don't just ask harder" lesson this app has already learned for
+     * busy slates and for the full daily report.
+     *
+     * @return the combined report, or a short error message if {@code sportKey} matches no known
+     *         category template (not an exception — a chat tool result, so a typo'd sport name reads
+     *         as a plain reply rather than a stack trace).
+     */
+    public String runResearchForSport(String sportKey) {
+        List<CategoryTemplate> matching = CATEGORY_TEMPLATES.stream()
+                .filter(t -> t.sportKey().equalsIgnoreCase(sportKey))
+                .toList();
+        if (matching.isEmpty()) {
+            List<String> knownSports = CATEGORY_TEMPLATES.stream()
+                    .map(CategoryTemplate::sportKey).distinct().sorted().toList();
+            return "Unknown sport \"" + sportKey + "\" — known sports: " + knownSports;
+        }
+        return runTasks(buildTasksForToday(matching));
+    }
+
+    /** Runs every given task independently via {@link OrchestratorService#chatOnce}, verifying and
+     *  stripping each one's GAMES_CHECKED line (see {@link #verifyAndStripGamesChecked}), and combines
+     *  the results into one report — shared by {@link #runResearch()} (the full daily cycle) and
+     *  {@link #runResearchForSport(String)} (one sport, on demand from chat). */
+    private String runTasks(List<SportTask> tasks) {
         StringBuilder report = new StringBuilder("Today's value plays\n");
         for (SportTask task : tasks) {
             log.info("Value-play research starting for {}", task.label());
@@ -370,7 +405,7 @@ public class ValuePlayScheduler {
     }
 
     /**
-     * Turns each {@link #CATEGORY_TEMPLATES} entry into one or more {@link SportTask}s for TODAY
+     * Turns each given {@link CategoryTemplate} into one or more {@link SportTask}s for TODAY
      * specifically, based on how many games that sport/competition-cluster actually has today — a
      * cheap, deterministic Java-side check ({@link SportsCatalogService#listTodaysGameMatchups}, no
      * LLM call) run BEFORE any research starts. A quiet day (at or under
@@ -380,9 +415,9 @@ public class ValuePlayScheduler {
      * can. If the game-count lookup itself fails for a sport, fall back to a single unsplit task
      * rather than losing that sport's research entirely for the day.
      */
-    private List<SportTask> buildTasksForToday() {
+    private List<SportTask> buildTasksForToday(List<CategoryTemplate> templates) {
         List<SportTask> tasks = new ArrayList<>();
-        for (CategoryTemplate template : CATEGORY_TEMPLATES) {
+        for (CategoryTemplate template : templates) {
             List<String> games;
             try {
                 games = sportsCatalogService.listTodaysGameMatchups(template.sportKey());

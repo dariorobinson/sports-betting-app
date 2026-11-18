@@ -45,11 +45,15 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
   same-day research tool, not a swing-trade one). The combined report is DMed to one pre-authorized
   Discord user. Nothing is ever placed — see [`docs/instructions.md`](src/main/resources/docs/instructions.md)
   for the exact methodology/format the model follows.
-- You can also just DM the bot directly any time — a scoped request ("find me some value plays in
-  the NBA tonight", "what's Kalshi pricing the Chiefs game at") is researched inline in that one
-  chat turn; a genuinely unscoped "give me every possible play today" triggers the same scheduled-report cycle
-  as the scheduled report on demand (`RunFullSlateResearchTool`), since one chat turn can't reliably
-  research every sport and category itself — see `docs/instructions.md` for the exact routing rule.
+- You can also just DM the bot directly any time, with three tiers of scope: a request narrower than a
+  whole sport ("what's Kalshi pricing the Chiefs game at", "Luka's scoring prop tonight") is researched
+  inline in that one chat turn; a request scoped to one WHOLE sport ("give me NBA plays", "NFL player
+  props") triggers the same per-market-type research cycle as the scheduled report, scoped to just that
+  sport (`RunSportResearchTool`) — confirmed in production that one turn asked for a whole sport's
+  plays reliably covers only one prop type (e.g. NBA Points) and silently skips the rest, the exact
+  problem this cycle exists to prevent; a genuinely unscoped "give me every possible play today"
+  triggers the same cycle across every sport (`RunFullSlateResearchTool`) — see
+  `docs/instructions.md` for the exact routing rule.
 - **Auth**: Kalshi requires every private-endpoint request (order books, settlement history) to
   carry three headers — `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-TIMESTAMP`, `KALSHI-ACCESS-SIGNATURE` —
   where the signature is an RSA-PSS (SHA-256) signature over `timestamp + HTTP_METHOD + request_path`,

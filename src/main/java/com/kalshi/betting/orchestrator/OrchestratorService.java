@@ -97,12 +97,15 @@ public class OrchestratorService {
             GetInjuryReportTool.class);
 
     /** Tool set for interactive Discord chat — everything in {@link #VALUE_PLAY_TOOL_CLASSES} plus
-     *  {@link RunFullSlateResearchTool}, which a chat turn (but never a scheduled sub-task — see
-     *  above) can use for a genuinely unscoped "give me every possible play" request. */
+     *  {@link RunFullSlateResearchTool} (unscoped "give me every possible play") and
+     *  {@link RunSportResearchTool} (one whole sport's plays, e.g. "NBA plays"). Neither is included
+     *  in {@link #VALUE_PLAY_TOOL_CLASSES} — a chat turn can use them, but never a scheduled sub-task,
+     *  which would let a sub-task recursively re-trigger a whole research cycle. */
     private static final List<Class<?>> TOOL_CLASSES;
     static {
         List<Class<?>> all = new ArrayList<>(VALUE_PLAY_TOOL_CLASSES);
         all.add(RunFullSlateResearchTool.class);
+        all.add(RunSportResearchTool.class);
         TOOL_CLASSES = List.copyOf(all);
     }
 
