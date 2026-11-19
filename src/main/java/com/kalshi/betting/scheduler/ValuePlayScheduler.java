@@ -280,6 +280,12 @@ public class ValuePlayScheduler {
             structured ESPN tools don't cover — prefer the structured tools first since their numbers are \
             exact.
 
+            Only recommend a play where Kalshi's own implied probability for the side you're \
+            recommending is AT LEAST 30% — this report isn't about speculative longshots. A real, \
+            stats-based edge is still worth exactly as much at 35% implied as it is at 80% implied; \
+            there's just no reason to surface a play the market already treats as a true longshot. If \
+            every candidate you found in a category falls below that, say no plays qualify for it.
+
             Your final answer must contain ONLY the formatted play list in docs/instructions.md's required \
             format (or one short "no plays" sentence) — nothing else, anywhere in the response. Do all \
             comparing/weighing of candidates silently and start your visible answer directly with "Plays \
@@ -381,10 +387,23 @@ public class ValuePlayScheduler {
         return runTasks(buildTasksForToday(matching));
     }
 
+    /** Below this, a play isn't included at all — see {@link OrchestratorService#dedupeAndFilterReport}.
+     *  Enforced twice: {@link #VALUE_METHODOLOGY} tells each task not to recommend one in the first
+     *  place (fewer low-value plays to filter later), and this is the authoritative, deterministic
+     *  backstop applied to the combined report, since a prompt-only rule isn't reliable enough to
+     *  trust alone for something this mechanically checkable — the same lesson already learned for
+     *  narration leakage and game/market-type coverage in this same class. */
+    private static final int MIN_IMPLIED_PROBABILITY_PERCENT = 30;
+
     /** Runs every given task independently via {@link OrchestratorService#chatOnce}, verifying and
-     *  stripping each one's GAMES_CHECKED line (see {@link #verifyAndStripGamesChecked}), and combines
-     *  the results into one report — shared by {@link #runResearch()} (the full daily cycle) and
-     *  {@link #runResearchForSport(String)} (one sport, on demand from chat). */
+     *  stripping each one's GAMES_CHECKED line (see {@link #verifyAndStripGamesChecked}), combines the
+     *  results into one report, then runs one final cross-task pass
+     *  ({@link OrchestratorService#dedupeAndFilterReport}) to drop low-value plays and collapse
+     *  duplicate plays (the same player/team recommended more than once across different sections,
+     *  confirmed in production) down to the single most valuable occurrence — neither of those is
+     *  visible to any one task on its own, only once everything is assembled. Shared by
+     *  {@link #runResearch()} (the full daily cycle) and {@link #runResearchForSport(String)} (one
+     *  sport, on demand from chat). */
     private String runTasks(List<SportTask> tasks) {
         StringBuilder report = new StringBuilder("Today's value plays\n");
         for (SportTask task : tasks) {
@@ -401,7 +420,7 @@ public class ValuePlayScheduler {
             log.info("Value-play research finished for {}: {} chars", task.label(), result.length());
             report.append("\n").append(task.label()).append("\n").append(result).append("\n");
         }
-        return report.toString();
+        return orchestratorService.dedupeAndFilterReport(report.toString(), MIN_IMPLIED_PROBABILITY_PERCENT);
     }
 
     /**

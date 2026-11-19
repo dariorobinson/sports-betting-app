@@ -50,6 +50,11 @@ For every candidate play:
    never a future game, no matter how good the matchup looks. These are same-day plays, not
    multi-day holds. If a sport/league has no games today, say so in one short sentence and stop —
    don't reach into tomorrow or later to find something to report.
+6. **Only recommend a play where Kalshi's own implied probability for the side you're recommending is
+   AT LEAST 30%.** This isn't a report about speculative longshots — a real, stats-based edge is worth
+   exactly as much at 35% implied as it is at 80% implied, so there's no reason to surface one the
+   market already prices as a true longshot. A play below that floor doesn't belong in the list at all,
+   no matter how large the gap to your own estimate looks.
 
 ## NEVER reuse an earlier message's tool results — always re-fetch fresh
 

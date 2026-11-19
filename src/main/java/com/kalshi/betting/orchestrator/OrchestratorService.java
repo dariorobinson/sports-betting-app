@@ -483,6 +483,73 @@ public class OrchestratorService {
         return gamesCheckedLine == null ? cleaned : cleaned + "\n\n" + gamesCheckedLine.strip();
     }
 
+    /**
+     * Final cross-task cleanup for a fully combined multi-sport/multi-task report (see
+     * {@code ValuePlayScheduler#runTasks}): drops any play below a minimum implied-probability floor,
+     * and collapses duplicate plays — the same player or team/market combo recommended more than once
+     * across different sections — down to the single most valuable one. Both issues only become
+     * visible once every task's output is sitting together; neither is something one task could catch
+     * on its own. A plain, tools-disabled, single rewrite pass, same reasoning as
+     * {@link #sanitizePlaysResponse}: mechanically filtering/deduping already-written content is a
+     * much simpler, more reliable job for a model than "research AND remember everything every other
+     * independent task already recommended," which is why this happens as its own dedicated pass
+     * after everything is assembled rather than asking each task to somehow avoid it up front.
+     *
+     * @param minImpliedProbabilityPercent plays with a recommended-side implied probability below
+     *                                     this are dropped entirely (e.g. 30 for "30% or higher")
+     */
+    public String dedupeAndFilterReport(String rawReport, int minImpliedProbabilityPercent) {
+        if (rawReport.isBlank() || !rawReport.contains("Plays for ")) {
+            return rawReport;
+        }
+        String prompt = """
+                Below is a combined report assembled from several independent research tasks, each \
+                covering a different sport or market type. Two cleanup passes are needed now that \
+                everything is sitting together:
+
+                1. DROP any play where the Kalshi-implied probability for the recommended side is \
+                below %d%% — this report only wants plays Kalshi already prices at %d%% or higher, not \
+                speculative longshots.
+
+                2. DEDUPE: if the same player, or the same team in the same market type, is recommended \
+                more than once across different sections (even with slightly different odds, since \
+                independent tasks sometimes both landed on the same insight), keep only the ONE \
+                occurrence with the larger gap between "your estimate"/"my estimate" and the Kalshi \
+                implied probability — that's the more valuable one — and remove the other \
+                occurrence(s) entirely.
+
+                Preserve the exact wording, odds, and formatting of every play that survives — do not \
+                reanalyze, rephrase, or second-guess any of them, only decide keep-vs-drop. If a \
+                section's plays are all dropped, replace that section with a short "no plays" sentence \
+                in the same style as the other empty sections already in the report. Keep the overall \
+                structure (league/task headers, one blank line between plays) exactly as it is \
+                elsewhere in the report.
+
+                Report:
+                %s""".formatted(minImpliedProbabilityPercent, minImpliedProbabilityPercent, rawReport);
+
+        MessageCreateParams params = MessageCreateParams.builder()
+                .model(MODEL)
+                .maxTokens(8192L)
+                .thinking(BetaThinkingConfigDisabled.builder().build())
+                .addUserMessage(prompt)
+                .build();
+
+        BetaMessage message = client.beta().messages().create(params);
+        StringBuilder text = new StringBuilder();
+        for (BetaContentBlock block : message.content()) {
+            block.text().ifPresent(t -> text.append(t.text()));
+        }
+        String cleaned = text.toString();
+        if (cleaned.isBlank()) {
+            return rawReport;
+        }
+        if (!cleaned.equals(rawReport)) {
+            log.info("Deduped/filtered combined report ({} chars -> {} chars)", rawReport.length(), cleaned.length());
+        }
+        return cleaned;
+    }
+
     /** Rebuilds the accumulated conversation with NO tools attached and a blunt "stop researching,
      *  answer now" nudge appended, so the model can only respond with text — used when the normal
      *  tool-calling loop exhausts its iteration budget without ever producing a final answer. */

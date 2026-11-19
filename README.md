@@ -42,7 +42,12 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
   backed by the curated [`SportMarketRegistry`](src/main/java/com/kalshi/betting/service/SportMarketRegistry.java)),
   pull real stats from ESPN ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the
   web, and write up every value play it finds for TODAY's games only (never a future day — this is a
-  same-day research tool, not a swing-trade one). The combined report is DMed to one pre-authorized
+  same-day research tool, not a swing-trade one). Once every task's output is combined, one final
+  cleanup pass ([`OrchestratorService.dedupeAndFilterReport`](src/main/java/com/kalshi/betting/orchestrator/OrchestratorService.java))
+  drops any play priced below 30% implied (this isn't a speculative-longshot report) and collapses the
+  same player/team showing up more than once across different sections down to its single most
+  valuable occurrence — both are things no individual task can catch on its own, only once everything
+  is sitting together. The combined report is DMed to one pre-authorized
   Discord user. Nothing is ever placed — see [`docs/instructions.md`](src/main/resources/docs/instructions.md)
   for the exact methodology/format the model follows.
 - You can also just DM the bot directly any time, with three tiers of scope: a request narrower than a
