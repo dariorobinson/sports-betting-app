@@ -54,7 +54,16 @@ For every candidate play:
    AT LEAST 30%.** This isn't a report about speculative longshots — a real, stats-based edge is worth
    exactly as much at 35% implied as it is at 80% implied, so there's no reason to surface one the
    market already prices as a true longshot. A play below that floor doesn't belong in the list at all,
-   no matter how large the gap to your own estimate looks.
+   no matter how large the gap to your own estimate looks. Within 30%+, actively favor the 50-70%
+   implied band — that's the sweet spot this report wants more of; treat 30-50% as lower priority,
+   still includable if nothing better covers that player/game but not a reason to skip looking harder
+   for a 50-70% opportunity.
+7. **Only recommend ONE play per player, across every market/prop type, not just within one market.**
+   If the same player would otherwise clear the bar on more than one prop (e.g. both a points prop and
+   a rebounds prop), pick their single most valuable one — the larger gap between your estimate and
+   Kalshi's implied probability — and don't mention the other. This does not apply to teams: the same
+   team can appear in both a Moneyline and a Spread play, for example, since those aren't the same kind
+   of duplication.
 
 ## NEVER reuse an earlier message's tool results — always re-fetch fresh
 

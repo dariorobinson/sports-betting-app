@@ -284,7 +284,12 @@ public class ValuePlayScheduler {
             recommending is AT LEAST 30% — this report isn't about speculative longshots. A real, \
             stats-based edge is still worth exactly as much at 35% implied as it is at 80% implied; \
             there's just no reason to surface a play the market already treats as a true longshot. If \
-            every candidate you found in a category falls below that, say no plays qualify for it.
+            every candidate you found in a category falls below that, say no plays qualify for it. \
+            Within the 30%+ range, actively look harder for plays in the 50-70% implied band — that's \
+            the sweet spot this report wants more of. Treat a 30-50% implied play as lower priority: \
+            still worth including if it's genuinely the best thing you found for that player/game and \
+            nothing in the 50-70% range covers it, but don't let a borderline 30-50% play crowd out a \
+            real 50-70% opportunity you didn't look hard enough for.
 
             Your final answer must contain ONLY the formatted play list in docs/instructions.md's required \
             format (or one short "no plays" sentence) — nothing else, anywhere in the response. Do all \

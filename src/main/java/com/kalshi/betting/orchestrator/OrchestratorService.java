@@ -406,7 +406,7 @@ public class OrchestratorService {
             responseText = forceSynthesis(assembleRequest(toolClasses, baseMessages, turns));
         }
 
-        return sanitizePlaysResponse(responseText);
+        return stripThinkTags(sanitizePlaysResponse(responseText));
     }
 
     /**
@@ -472,7 +472,7 @@ public class OrchestratorService {
         for (BetaContentBlock block : message.content()) {
             block.text().ifPresent(t -> text.append(t.text()));
         }
-        String cleaned = text.toString();
+        String cleaned = stripThinkTags(text.toString());
         if (cleaned.isBlank()) {
             return rawResponse;
         }
@@ -504,26 +504,44 @@ public class OrchestratorService {
         }
         String prompt = """
                 Below is a combined report assembled from several independent research tasks, each \
-                covering a different sport or market type. Two cleanup passes are needed now that \
+                covering a different sport or market type. Three cleanup passes are needed now that \
                 everything is sitting together:
 
                 1. DROP any play where the Kalshi-implied probability for the recommended side is \
                 below %d%% — this report only wants plays Kalshi already prices at %d%% or higher, not \
                 speculative longshots.
 
-                2. DEDUPE: if the same player, or the same team in the same market type, is recommended \
-                more than once across different sections (even with slightly different odds, since \
-                independent tasks sometimes both landed on the same insight), keep only the ONE \
-                occurrence with the larger gap between "your estimate"/"my estimate" and the Kalshi \
-                implied probability — that's the more valuable one — and remove the other \
-                occurrence(s) entirely.
+                2. ONE PLAY PER PLAYER: if the same PLAYER appears in more than one recommended play \
+                ANYWHERE in the report — even across completely different prop types/sections (e.g. a \
+                points prop in one section and a rebounds prop in another) — keep ONLY their single \
+                most valuable play (the larger gap between "your estimate"/"my estimate" and the Kalshi \
+                implied probability) and remove every other play naming that player, regardless of \
+                which market type it's in. A team showing up more than once (e.g. both a Moneyline and \
+                a Spread play on the same team) is fine and NOT subject to this rule — this is about \
+                individual players specifically.
+
+                3. Prefer plays with implied probability in the 50-70%% range — when picking which of a \
+                player's plays survives rule 2, or when a section has more candidates than clearly \
+                clear the bar, weight toward the 50-70%% band over the 30-50%% band; treat 30-50%% as \
+                lower priority, not a reason to exclude it outright if it's still a genuinely good play \
+                and nothing in the 50-70%% range covers that player/game. Within each section, order the \
+                surviving plays with 50-70%% implied ones first, 30-50%% ones after.
 
                 Preserve the exact wording, odds, and formatting of every play that survives — do not \
-                reanalyze, rephrase, or second-guess any of them, only decide keep-vs-drop. If a \
-                section's plays are all dropped, replace that section with a short "no plays" sentence \
-                in the same style as the other empty sections already in the report. Keep the overall \
-                structure (league/task headers, one blank line between plays) exactly as it is \
+                reanalyze, rephrase, or second-guess any of them, only decide keep-vs-drop and reorder. \
+                If a section's plays are all dropped, replace that section with a short "no plays" \
+                sentence in the same style as the other empty sections already in the report. Keep the \
+                overall structure (league/task headers, one blank line between plays) exactly as it is \
                 elsewhere in the report.
+
+                Your output must be ONLY the cleaned report text, starting directly with "Today's value \
+                plays" (or whatever the report's own first line already is) — nothing before it, no \
+                preamble, no running commentary on which plays you're dropping/keeping/reordering and \
+                why, and absolutely no <think> tags or any other visible reasoning/scratch-work of any \
+                kind. Do all of this silently; a real production response from this exact prompt once \
+                opened with a multi-paragraph "<think>...</think>" block walking through every single \
+                keep/drop decision before the actual report — that is not acceptable output and must \
+                never happen again.
 
                 Report:
                 %s""".formatted(minImpliedProbabilityPercent, minImpliedProbabilityPercent, rawReport);
@@ -540,7 +558,7 @@ public class OrchestratorService {
         for (BetaContentBlock block : message.content()) {
             block.text().ifPresent(t -> text.append(t.text()));
         }
-        String cleaned = text.toString();
+        String cleaned = stripThinkTags(text.toString());
         if (cleaned.isBlank()) {
             return rawReport;
         }
@@ -548,6 +566,17 @@ public class OrchestratorService {
             log.info("Deduped/filtered combined report ({} chars -> {} chars)", rawReport.length(), cleaned.length());
         }
         return cleaned;
+    }
+
+    /** Matches a literal "&lt;think&gt;...&lt;/think&gt;" block some responses have written directly \
+     *  into their visible text (not the SDK's separate, already-disabled "thinking" content-block \
+     *  type — this is the model adopting its own scratchpad convention in plain text, which disabling \
+     *  that feature does nothing to prevent). Confirmed in production for {@link #dedupeAndFilterReport}: \
+     *  a whole multi-paragraph reasoning walkthrough wrapped in these tags, ahead of the actual report. \
+     *  The prompt now explicitly forbids this, but this strip is the deterministic backstop regardless —
+     *  the same "prompt rule + mechanical enforcement" pairing used everywhere else narration has leaked. */
+    private static String stripThinkTags(String text) {
+        return text.replaceAll("(?is)<think>.*?</think>\\s*", "").stripLeading();
     }
 
     /** Rebuilds the accumulated conversation with NO tools attached and a blunt "stop researching,
