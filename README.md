@@ -41,15 +41,18 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
   ([`GetSportBoardTool`](src/main/java/com/kalshi/betting/orchestrator/tool/GetSportBoardTool.java),
   backed by the curated [`SportMarketRegistry`](src/main/java/com/kalshi/betting/service/SportMarketRegistry.java)),
   pull real stats from ESPN ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the
-  web, and write up every value play it finds for TODAY's games only (never a future day — this is a
-  same-day research tool, not a swing-trade one). Once every task's output is combined, one final
-  cleanup pass ([`OrchestratorService.dedupeAndFilterReport`](src/main/java/com/kalshi/betting/orchestrator/OrchestratorService.java))
-  drops any play priced below 30% implied (this isn't a speculative-longshot report) and collapses the
-  same player/team showing up more than once across different sections down to its single most
-  valuable occurrence — both are things no individual task can catch on its own, only once everything
-  is sitting together. The combined report is DMed to one pre-authorized
+  web for TODAY's games only (never a future day — this is a same-day research tool, not a
+  swing-trade one), and report every value play it finds by calling
+  [`RecordPlayTool`](src/main/java/com/kalshi/betting/orchestrator/tool/RecordPlayTool.java) once per
+  play — structured data (league, subject, market, odds, both probabilities, reasoning), not free-text
+  prose. That's what lets the final assembly step be plain, free, deterministic Java instead of one or
+  two more paid Anthropic calls just to clean up what the model wrote: once every task's plays are
+  collected, [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
+  itself drops anything priced below 30% implied, collapses the same player showing up more than once
+  across different prop types down to their single most valuable play, and formats the final report —
+  no model call involved in any of that. The combined report is DMed to one pre-authorized
   Discord user. Nothing is ever placed — see [`docs/instructions.md`](src/main/resources/docs/instructions.md)
-  for the exact methodology/format the model follows.
+  for the exact methodology the model follows.
 - You can also just DM the bot directly any time, with three tiers of scope: a request narrower than a
   whole sport ("what's Kalshi pricing the Chiefs game at", "Luka's scoring prop tonight") is researched
   inline in that one chat turn; a request scoped to one WHOLE sport ("give me NBA plays", "NFL player

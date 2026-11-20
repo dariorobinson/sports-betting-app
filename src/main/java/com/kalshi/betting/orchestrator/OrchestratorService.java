@@ -31,8 +31,10 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
@@ -109,6 +111,26 @@ public class OrchestratorService {
         TOOL_CLASSES = List.copyOf(all);
     }
 
+    /** {@link #VALUE_PLAY_TOOL_CLASSES} plus {@link RecordPlayTool} — used only by
+     *  {@link #chatOnceForPlays}, i.e. {@code ValuePlayScheduler}'s own research tasks. Deliberately
+     *  NOT folded into {@link #TOOL_CLASSES}: a top-level chat turn should keep answering a narrow,
+     *  one-off question in plain text as it always has, not be offered a structured "record a play"
+     *  tool that only makes sense for the scheduler's report-building pipeline. */
+    public static final List<Class<?>> RECORD_PLAY_TOOL_CLASSES;
+    static {
+        List<Class<?>> all = new ArrayList<>(VALUE_PLAY_TOOL_CLASSES);
+        all.add(RecordPlayTool.class);
+        RECORD_PLAY_TOOL_CLASSES = List.copyOf(all);
+    }
+
+    /** The result of a research task: whatever plain text it wrote (for {@code chatOnceForPlays}
+     *  tasks, expected to be just a GAMES_CHECKED line — see {@code ValuePlayScheduler} — never a
+     *  formatted play list anymore) plus every play it reported via {@link RecordPlayTool}. {@code
+     *  chat}/{@code chatOnce} only ever care about {@code text}; {@code chatOnceForPlays} is the one
+     *  that needs {@code plays}. */
+    public record PlaysResult(String text, List<RecordedPlay> plays) {
+    }
+
     private final AnthropicClient client;
     private final String systemPromptTemplate;
     private final Map<String, List<ChatMessage>> histories = new ConcurrentHashMap<>();
@@ -138,7 +160,12 @@ public class OrchestratorService {
         ToolServices.valuePlayScheduler = valuePlaySchedulerProvider;
         ToolServices.validator = validator;
         this.systemPromptTemplate = loadInstructions();
-        for (Class<?> toolClass : TOOL_CLASSES) {
+        // TOOL_CLASSES doesn't include RecordPlayTool (see RECORD_PLAY_TOOL_CLASSES) — dispatch still
+        // needs to recognize it by name when a chatOnceForPlays task calls it, so register the union
+        // of both lists rather than just the ones a top-level chat turn sees.
+        Set<Class<?>> allToolClasses = new LinkedHashSet<>(TOOL_CLASSES);
+        allToolClasses.addAll(RECORD_PLAY_TOOL_CLASSES);
+        for (Class<?> toolClass : allToolClasses) {
             toolClassesByName.put(NonStrictTools.from(toolClass).name(), toolClass);
         }
     }
@@ -173,7 +200,7 @@ public class OrchestratorService {
             baseMessages = new ArrayList<>(history);
         }
 
-        String responseText = runAgentLoop(userId, TOOL_CLASSES, baseMessages);
+        String responseText = runAgentLoop(userId, TOOL_CLASSES, baseMessages).text();
 
         if (!responseText.isEmpty()) {
             synchronized (history) {
@@ -214,6 +241,20 @@ public class OrchestratorService {
      * the survey/pricing tools — fewer tool schemas means a smaller cached prefix on every iteration.
      */
     public String chatOnce(String logId, String userMessage, List<Class<?>> toolClasses) {
+        return runAgentLoop(logId, toolClasses, List.of(new ChatMessage("user", userMessage))).text();
+    }
+
+    /**
+     * Like {@link #chatOnce(String, String, List)}, but for a task that reports its plays as
+     * structured {@link RecordPlayTool} calls instead of free-text prose — pass
+     * {@link #RECORD_PLAY_TOOL_CLASSES} as {@code toolClasses}. Returns the parsed plays directly
+     * alongside whatever text the task wrote, so the caller ({@code ValuePlayScheduler}) can dedupe,
+     * floor-filter, band-sort, and format the final report in plain Java instead of spending two more
+     * Anthropic calls (narration-stripping plus a separate dedupe/filter pass) just to clean up
+     * free-text output after the fact — this is the whole point of recording plays structurally in
+     * the first place.
+     */
+    public PlaysResult chatOnceForPlays(String logId, String userMessage, List<Class<?>> toolClasses) {
         return runAgentLoop(logId, toolClasses, List.of(new ChatMessage("user", userMessage)));
     }
 
@@ -313,10 +354,12 @@ public class OrchestratorService {
         return b.build();
     }
 
-    /** The actual tool-calling loop — shared by {@link #chat} and {@link #chatOnce}. {@code logId}
-     *  is just a label for log lines, not necessarily a real Discord user id (see {@link #chatOnce}). */
-    private String runAgentLoop(String logId, List<Class<?>> toolClasses, List<ChatMessage> baseMessages) {
+    /** The actual tool-calling loop — shared by {@link #chat}, {@link #chatOnce}, and
+     *  {@link #chatOnceForPlays}. {@code logId} is just a label for log lines, not necessarily a real
+     *  Discord user id (see {@link #chatOnce}). */
+    private PlaysResult runAgentLoop(String logId, List<Class<?>> toolClasses, List<ChatMessage> baseMessages) {
         String finalResponse = "";
+        List<RecordedPlay> recordedPlays = new ArrayList<>();
         Map<String, Integer> toolCallCounts = new LinkedHashMap<>();
         int iterationsUsed = 0;
         // Aggregate token usage across the loop so cost is visible from the normal INFO logs (input
@@ -380,7 +423,7 @@ public class OrchestratorService {
 
             List<RawResult> results = new ArrayList<>();
             for (BetaToolUseBlock toolUse : toolUses) {
-                results.add(runTool(toolUse));
+                results.add(runTool(toolUse, recordedPlays));
             }
             turns.add(new LoopTurn(message, results));
         }
@@ -394,19 +437,22 @@ public class OrchestratorService {
                 inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
 
         String responseText = finalResponse;
-        if (responseText.isEmpty()) {
+        if (responseText.isEmpty() && recordedPlays.isEmpty()) {
             // The loop ended (almost always by hitting MAX_TOOL_ITERATIONS with tool calls still
-            // pending) without the model ever producing a text turn — silently returning nothing is
-            // worse than a rushed answer, so force one more call with NO tools attached, so the
-            // model physically cannot keep researching and must respond with text. Reassemble the
-            // full accumulated conversation (all turns) to hand it the complete context.
-            log.warn("[{}] Tool loop ended without a final text response (likely hit the {}-iteration "
-                    + "cap) — forcing a no-tools synthesis call instead of returning nothing.",
-                    logId, MAX_TOOL_ITERATIONS);
+            // pending) without the model ever producing a text turn OR recording any plays — silently
+            // returning nothing is worse than a rushed answer, so force one more call with NO tools
+            // attached, so the model physically cannot keep researching and must respond with text.
+            // Skipped when plays WERE already recorded via RecordPlayTool calls (a chatOnceForPlays
+            // task with no closing text is a normal, successful outcome, not a failure to paper over
+            // with an extra paid call). Reassemble the full accumulated conversation (all turns) to
+            // hand it the complete context.
+            log.warn("[{}] Tool loop ended without a final text response or any recorded plays "
+                    + "(likely hit the {}-iteration cap) — forcing a no-tools synthesis call instead "
+                    + "of returning nothing.", logId, MAX_TOOL_ITERATIONS);
             responseText = forceSynthesis(assembleRequest(toolClasses, baseMessages, turns));
         }
 
-        return stripThinkTags(sanitizePlaysResponse(responseText));
+        return new PlaysResult(stripThinkTags(sanitizePlaysResponse(responseText)), recordedPlays);
     }
 
     /**
@@ -483,98 +529,13 @@ public class OrchestratorService {
         return gamesCheckedLine == null ? cleaned : cleaned + "\n\n" + gamesCheckedLine.strip();
     }
 
-    /**
-     * Final cross-task cleanup for a fully combined multi-sport/multi-task report (see
-     * {@code ValuePlayScheduler#runTasks}): drops any play below a minimum implied-probability floor,
-     * and collapses duplicate plays — the same player or team/market combo recommended more than once
-     * across different sections — down to the single most valuable one. Both issues only become
-     * visible once every task's output is sitting together; neither is something one task could catch
-     * on its own. A plain, tools-disabled, single rewrite pass, same reasoning as
-     * {@link #sanitizePlaysResponse}: mechanically filtering/deduping already-written content is a
-     * much simpler, more reliable job for a model than "research AND remember everything every other
-     * independent task already recommended," which is why this happens as its own dedicated pass
-     * after everything is assembled rather than asking each task to somehow avoid it up front.
-     *
-     * @param minImpliedProbabilityPercent plays with a recommended-side implied probability below
-     *                                     this are dropped entirely (e.g. 30 for "30% or higher")
-     */
-    public String dedupeAndFilterReport(String rawReport, int minImpliedProbabilityPercent) {
-        if (rawReport.isBlank() || !rawReport.contains("Plays for ")) {
-            return rawReport;
-        }
-        String prompt = """
-                Below is a combined report assembled from several independent research tasks, each \
-                covering a different sport or market type. Three cleanup passes are needed now that \
-                everything is sitting together:
-
-                1. DROP any play where the Kalshi-implied probability for the recommended side is \
-                below %d%% — this report only wants plays Kalshi already prices at %d%% or higher, not \
-                speculative longshots.
-
-                2. ONE PLAY PER PLAYER: if the same PLAYER appears in more than one recommended play \
-                ANYWHERE in the report — even across completely different prop types/sections (e.g. a \
-                points prop in one section and a rebounds prop in another) — keep ONLY their single \
-                most valuable play (the larger gap between "your estimate"/"my estimate" and the Kalshi \
-                implied probability) and remove every other play naming that player, regardless of \
-                which market type it's in. A team showing up more than once (e.g. both a Moneyline and \
-                a Spread play on the same team) is fine and NOT subject to this rule — this is about \
-                individual players specifically.
-
-                3. Prefer plays with implied probability in the 50-70%% range — when picking which of a \
-                player's plays survives rule 2, or when a section has more candidates than clearly \
-                clear the bar, weight toward the 50-70%% band over the 30-50%% band; treat 30-50%% as \
-                lower priority, not a reason to exclude it outright if it's still a genuinely good play \
-                and nothing in the 50-70%% range covers that player/game. Within each section, order the \
-                surviving plays with 50-70%% implied ones first, 30-50%% ones after.
-
-                Preserve the exact wording, odds, and formatting of every play that survives — do not \
-                reanalyze, rephrase, or second-guess any of them, only decide keep-vs-drop and reorder. \
-                If a section's plays are all dropped, replace that section with a short "no plays" \
-                sentence in the same style as the other empty sections already in the report. Keep the \
-                overall structure (league/task headers, one blank line between plays) exactly as it is \
-                elsewhere in the report.
-
-                Your output must be ONLY the cleaned report text, starting directly with "Today's value \
-                plays" (or whatever the report's own first line already is) — nothing before it, no \
-                preamble, no running commentary on which plays you're dropping/keeping/reordering and \
-                why, and absolutely no <think> tags or any other visible reasoning/scratch-work of any \
-                kind. Do all of this silently; a real production response from this exact prompt once \
-                opened with a multi-paragraph "<think>...</think>" block walking through every single \
-                keep/drop decision before the actual report — that is not acceptable output and must \
-                never happen again.
-
-                Report:
-                %s""".formatted(minImpliedProbabilityPercent, minImpliedProbabilityPercent, rawReport);
-
-        MessageCreateParams params = MessageCreateParams.builder()
-                .model(MODEL)
-                .maxTokens(8192L)
-                .thinking(BetaThinkingConfigDisabled.builder().build())
-                .addUserMessage(prompt)
-                .build();
-
-        BetaMessage message = client.beta().messages().create(params);
-        StringBuilder text = new StringBuilder();
-        for (BetaContentBlock block : message.content()) {
-            block.text().ifPresent(t -> text.append(t.text()));
-        }
-        String cleaned = stripThinkTags(text.toString());
-        if (cleaned.isBlank()) {
-            return rawReport;
-        }
-        if (!cleaned.equals(rawReport)) {
-            log.info("Deduped/filtered combined report ({} chars -> {} chars)", rawReport.length(), cleaned.length());
-        }
-        return cleaned;
-    }
-
     /** Matches a literal "&lt;think&gt;...&lt;/think&gt;" block some responses have written directly \
      *  into their visible text (not the SDK's separate, already-disabled "thinking" content-block \
      *  type — this is the model adopting its own scratchpad convention in plain text, which disabling \
-     *  that feature does nothing to prevent). Confirmed in production for {@link #dedupeAndFilterReport}: \
-     *  a whole multi-paragraph reasoning walkthrough wrapped in these tags, ahead of the actual report. \
-     *  The prompt now explicitly forbids this, but this strip is the deterministic backstop regardless —
-     *  the same "prompt rule + mechanical enforcement" pairing used everywhere else narration has leaked. */
+     *  that feature does nothing to prevent). Confirmed in production, once as a multi-paragraph \
+     *  reasoning walkthrough ahead of a free-text report (before plays moved to structured \
+     *  {@link RecordPlayTool} calls, which made that whole failure mode moot for this app's own \
+     *  cleanup passes — this strip remains as a defensive backstop for the general chat path). */
     private static String stripThinkTags(String text) {
         return text.replaceAll("(?is)<think>.*?</think>\\s*", "").stripLeading();
     }
@@ -639,8 +600,12 @@ public class OrchestratorService {
      * {@code BetaToolRunner} uses internally, so parsing behavior matches exactly. Returns the raw
      * result (id/content/error); the tool-result message and any cache marker are built later in
      * {@link #toolResultMessage} so the sliding cache window can be applied fresh each iteration.
+     * <p>
+     * A {@link RecordPlayTool} call is additionally captured into {@code recordedPlays} (a no-op for
+     * every other tool) — this is how {@link #chatOnceForPlays} gets its structured output instead of
+     * having to parse it back out of free text.
      */
-    private RawResult runTool(BetaToolUseBlock toolUse) {
+    private RawResult runTool(BetaToolUseBlock toolUse, List<RecordedPlay> recordedPlays) {
         Class<?> toolClass = toolClassesByName.get(toolUse.name());
         if (toolClass == null) {
             log.error("Orchestrator tool dispatch failed: unknown tool '{}'", toolUse.name());
@@ -648,6 +613,15 @@ public class OrchestratorService {
         }
         try {
             Object instance = toolUse.input(toolClass);
+            if (instance instanceof RecordPlayTool recordPlayTool) {
+                RecordedPlay play = RecordedPlay.from(recordPlayTool);
+                if (play != null) {
+                    recordedPlays.add(play);
+                } else {
+                    log.warn("Orchestrator: RecordPlayTool call missing a required field, dropping it "
+                            + "(subject={})", recordPlayTool.displaySubject);
+                }
+            }
             String output = ((Supplier<?>) instance).get().toString();
             return new RawResult(toolUse.id(), output, false);
         } catch (Exception e) {

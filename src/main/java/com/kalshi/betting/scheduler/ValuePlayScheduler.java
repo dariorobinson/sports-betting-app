@@ -2,6 +2,7 @@ package com.kalshi.betting.scheduler;
 
 import com.kalshi.betting.discord.DiscordMessages;
 import com.kalshi.betting.orchestrator.OrchestratorService;
+import com.kalshi.betting.orchestrator.RecordedPlay;
 import com.kalshi.betting.service.SportsCatalogService;
 import net.dv8tion.jda.api.JDA;
 import org.slf4j.Logger;
@@ -12,8 +13,10 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,13 +26,17 @@ import java.util.regex.Pattern;
  * real research (ESPN analytics + server-side web search, see {@link OrchestratorService}), so the
  * user can decide and bet manually.
  * <p>
- * Runs one independent {@link OrchestratorService#chatOnce} call per (sport, market-category) task
- * (see {@link #CATEGORY_TEMPLATES}) rather than one giant survey across everything, or even one call
- * per sport — both of those reliably produced only partial coverage in production (a single
+ * Runs one independent {@link OrchestratorService#chatOnceForPlays} call per (sport, market-category)
+ * task (see {@link #CATEGORY_TEMPLATES}) rather than one giant survey across everything, or even one
+ * call per sport — both of those reliably produced only partial coverage in production (a single
  * sport-wide call would research game lines OR player props, never both, leaving the user to
  * manually ask follow-up chat questions for the rest, defeating the point of an autonomous scheduled
  * report). Scoping each call to one narrow (sport, category) slice gives it a full iteration budget
- * of its own and keeps each individual research task small enough to actually exhaust.
+ * of its own and keeps each individual research task small enough to actually exhaust. Each task
+ * reports its plays via structured {@link com.kalshi.betting.orchestrator.tool.RecordPlayTool} calls
+ * instead of free-text prose, so {@link #runTasks} can dedupe/floor-filter/band-sort/format the final
+ * combined report in plain Java — no extra Anthropic calls needed just to clean up free text after
+ * the fact, which is what made this whole pipeline slow and expensive before this was added.
  * <p>
  * How many actual tasks a template turns into is decided FRESH each run by {@link #buildTasksForToday(java.util.List)}
  * based on today's real game count per sport — a fixed one-task-per-category count was still not
@@ -269,9 +276,12 @@ public class ValuePlayScheduler {
                     scoring trend (GetTeamRecentFormTool).""")
     );
 
-    /** Shared instruction appended to every sport task. Same-day-only and output-brevity rules already
-     *  live in {@code docs/instructions.md} (applies to every call, not just this scheduler) — this is
-     *  only the value-search framing specific to this scheduled report. */
+    /** Shared instruction appended to every sport task. Same-day-only rules already live in
+     *  {@code docs/instructions.md} (applies to every call, not just this scheduler) — this is the
+     *  value-search framing specific to this scheduled report, plus how to report results now that
+     *  {@code RecordPlayTool} does that instead of free-text prose (see the class javadoc for why:
+     *  it's what lets {@link #runTasks} dedupe/filter/format everything in plain Java, with no second
+     *  or third Anthropic call needed just to clean up what the model already said). */
     private static final String VALUE_METHODOLOGY = """
 
             Remember: this is a VALUE search, not a safe-favorite search — a play is only worth including \
@@ -280,35 +290,24 @@ public class ValuePlayScheduler {
             structured ESPN tools don't cover — prefer the structured tools first since their numbers are \
             exact.
 
-            Only recommend a play where Kalshi's own implied probability for the side you're \
-            recommending is AT LEAST 30% — this report isn't about speculative longshots. A real, \
-            stats-based edge is still worth exactly as much at 35% implied as it is at 80% implied; \
-            there's just no reason to surface a play the market already treats as a true longshot. If \
-            every candidate you found in a category falls below that, say no plays qualify for it. \
-            Within the 30%+ range, actively look harder for plays in the 50-70% implied band — that's \
-            the sweet spot this report wants more of. Treat a 30-50% implied play as lower priority: \
-            still worth including if it's genuinely the best thing you found for that player/game and \
-            nothing in the 50-70% range covers it, but don't let a borderline 30-50% play crowd out a \
-            real 50-70% opportunity you didn't look hard enough for.
+            Actively look for plays in the 50-70% implied range — that's the sweet spot this report wants \
+            more of. A 30-50% implied play is lower priority: still worth recording if it's genuinely the \
+            best thing you found for that player/game and nothing in the 50-70% range covers it, but \
+            don't let a borderline 30-50% play crowd out a real 50-70% opportunity you didn't look hard \
+            enough for. Don't bother recording anything below 30% implied at all — it'll just be dropped.
 
-            Your final answer must contain ONLY the formatted play list in docs/instructions.md's required \
-            format (or one short "no plays" sentence) — nothing else, anywhere in the response. Do all \
-            comparing/weighing of candidates silently and start your visible answer directly with "Plays \
-            for {date}". This has leaked into real reports across multiple rounds of user feedback and is \
-            not acceptable output — specifically banned: opening narration ("Now I have what I need," \
-            "Let me finalize the analysis," "Key findings:," "Based on the data, let me note..."), a \
-            walkthrough comparing candidates before picking winners, mid-sentence self-correction ("let me \
-            restate... actually..."), a fake play entry for a market you're SKIPPING (e.g. "N/A ... \
-            Skipped: no real edge"), and any closing mention of what else you checked but didn't include. \
-            If you're not recommending it, it must leave zero trace in the response.
+            Call RecordPlayTool once for EACH play that clears the bar — do not ALSO write the play out \
+            as text anywhere; that tool call is the entire deliverable now. Call it zero times if nothing \
+            clears the bar for this task — don't explain why in text either, an empty result is a \
+            complete, correct answer on its own.
 
-            After everything else above (the play list or the "no plays" sentence), add exactly one \
-            more line, for internal logging only — it is never shown to the user, so it doesn't need to \
-            read naturally, it just needs to match this format exactly: \
-            "GAMES_CHECKED: {game1}; {game2}; ..." listing EVERY game from today's slate you actually \
-            evaluated for this task (whether or not it produced a recommended play), using the same \
-            team-matchup names given to you. This is how coverage gets verified after the fact — do not \
-            list a game you didn't genuinely check.""";
+            The ONLY text you should write in your final response is exactly one line, for internal \
+            logging only — it is never shown to the user, so it doesn't need to read naturally, it just \
+            needs to match this format exactly: "GAMES_CHECKED: {game1}; {game2}; ..." listing EVERY game \
+            from today's slate you actually evaluated for this task (whether or not it produced a \
+            recorded play), using the same team-matchup names given to you. This is how coverage gets \
+            verified after the fact — do not list a game you didn't genuinely check, and do not write \
+            anything else alongside it.""";
 
     private final ObjectProvider<JDA> jdaProvider;
     private final OrchestratorService orchestratorService;
@@ -392,40 +391,129 @@ public class ValuePlayScheduler {
         return runTasks(buildTasksForToday(matching));
     }
 
-    /** Below this, a play isn't included at all — see {@link OrchestratorService#dedupeAndFilterReport}.
-     *  Enforced twice: {@link #VALUE_METHODOLOGY} tells each task not to recommend one in the first
-     *  place (fewer low-value plays to filter later), and this is the authoritative, deterministic
-     *  backstop applied to the combined report, since a prompt-only rule isn't reliable enough to
-     *  trust alone for something this mechanically checkable — the same lesson already learned for
-     *  narration leakage and game/market-type coverage in this same class. */
+    /** Below this, a play isn't included at all — enforced here in plain Java (see {@link #runTasks}),
+     *  not by asking the model to self-police it. {@link #VALUE_METHODOLOGY} also tells each task not
+     *  to bother recording one in the first place (fewer wasted tool calls), but this is the
+     *  authoritative backstop — the same lesson already learned for narration leakage and
+     *  game/market-type coverage in this same class: a prompt-only rule isn't reliable enough to trust
+     *  alone for something this mechanically checkable. */
     private static final int MIN_IMPLIED_PROBABILITY_PERCENT = 30;
+    /** A play's implied probability in this range is preferred over anything outside it when the same
+     *  player has more than one recorded play (see {@link #dedupeFilterSort}) — see
+     *  {@link #VALUE_METHODOLOGY} for why this band specifically. */
+    private static final int PREFERRED_BAND_LOW = 50;
+    private static final int PREFERRED_BAND_HIGH = 70;
 
-    /** Runs every given task independently via {@link OrchestratorService#chatOnce}, verifying and
-     *  stripping each one's GAMES_CHECKED line (see {@link #verifyAndStripGamesChecked}), combines the
-     *  results into one report, then runs one final cross-task pass
-     *  ({@link OrchestratorService#dedupeAndFilterReport}) to drop low-value plays and collapse
-     *  duplicate plays (the same player/team recommended more than once across different sections,
-     *  confirmed in production) down to the single most valuable occurrence — neither of those is
-     *  visible to any one task on its own, only once everything is assembled. Shared by
-     *  {@link #runResearch()} (the full daily cycle) and {@link #runResearchForSport(String)} (one
-     *  sport, on demand from chat). */
+    /** Runs every given task independently via {@link OrchestratorService#chatOnceForPlays}, checks
+     *  each one's GAMES_CHECKED line (see {@link #logGamesCheckedCoverage}), collects every
+     *  {@link RecordedPlay} across every task, then dedupes/floor-filters/band-sorts/formats the
+     *  combined result entirely in Java (see {@link #dedupeFilterSort} and {@link #formatReport}) —
+     *  no model call needed for any of that anymore, since the plays already arrived as structured
+     *  data instead of free-text prose that would otherwise need a second/third Anthropic call just
+     *  to clean up. Shared by {@link #runResearch()} (the full daily cycle) and
+     *  {@link #runResearchForSport(String)} (one sport, on demand from chat). */
     private String runTasks(List<SportTask> tasks) {
-        StringBuilder report = new StringBuilder("Today's value plays\n");
+        List<RecordedPlay> allPlays = new ArrayList<>();
         for (SportTask task : tasks) {
             log.info("Value-play research starting for {}", task.label());
-            String result;
+            List<RecordedPlay> taskPlays;
             try {
-                result = orchestratorService.chatOnce("value-plays-" + task.label(),
-                        task.prompt() + VALUE_METHODOLOGY, OrchestratorService.VALUE_PLAY_TOOL_CLASSES);
-                result = verifyAndStripGamesChecked(task, result);
+                OrchestratorService.PlaysResult result = orchestratorService.chatOnceForPlays(
+                        "value-plays-" + task.label(), task.prompt() + VALUE_METHODOLOGY,
+                        OrchestratorService.RECORD_PLAY_TOOL_CLASSES);
+                taskPlays = result.plays();
+                logGamesCheckedCoverage(task, result.text());
             } catch (Exception e) {
                 log.error("Value-play research failed for {}", task.label(), e);
-                result = "Research failed: " + e.getMessage();
+                taskPlays = List.of();
             }
-            log.info("Value-play research finished for {}: {} chars", task.label(), result.length());
-            report.append("\n").append(task.label()).append("\n").append(result).append("\n");
+            log.info("Value-play research finished for {}: {} play(s) recorded", task.label(), taskPlays.size());
+            allPlays.addAll(taskPlays);
         }
-        return orchestratorService.dedupeAndFilterReport(report.toString(), MIN_IMPLIED_PROBABILITY_PERCENT);
+        List<RecordedPlay> finalPlays = dedupeFilterSort(allPlays);
+        log.info("Combined report: {} plays recorded across all tasks, {} after dedupe/filter",
+                allPlays.size(), finalPlays.size());
+        return formatReport(finalPlays);
+    }
+
+    /**
+     * Collapses the whole run's recorded plays down to what actually gets shown: drop anything below
+     * {@link #MIN_IMPLIED_PROBABILITY_PERCENT}, then collapse every player who shows up in more than
+     * one play — even under completely different prop types — down to their single most valuable one
+     * (confirmed in production: the same player got recorded under both a points prop and a rebounds
+     * prop from two different tasks, since neither task knows what the others found). "Most valuable"
+     * prefers the {@link #PREFERRED_BAND_LOW}-{@link #PREFERRED_BAND_HIGH}% implied band over a larger
+     * raw gap outside it, matching the same preference tasks are told to research toward. Team-level
+     * plays (empty {@code playerName}) are never deduped against each other — the same team showing up
+     * in both a Moneyline and a Spread play is expected, not a duplicate.
+     */
+    private List<RecordedPlay> dedupeFilterSort(List<RecordedPlay> plays) {
+        List<RecordedPlay> aboveFloor = plays.stream()
+                .filter(p -> p.impliedProbabilityPercent() >= MIN_IMPLIED_PROBABILITY_PERCENT)
+                .toList();
+
+        Map<String, RecordedPlay> bestByPlayer = new LinkedHashMap<>();
+        List<RecordedPlay> result = new ArrayList<>();
+        for (RecordedPlay play : aboveFloor) {
+            if (!play.isPlayerProp()) {
+                result.add(play);
+                continue;
+            }
+            String key = play.playerName().toLowerCase(Locale.ROOT);
+            RecordedPlay existing = bestByPlayer.get(key);
+            if (existing == null || isMoreValuable(play, existing)) {
+                bestByPlayer.put(key, play);
+            }
+        }
+        result.addAll(bestByPlayer.values());
+
+        // Stable sort: group by league in first-appearance order, and within each league put the
+        // preferred 50-70% band first — List.sort is guaranteed stable, so ties (same league, same
+        // band-or-not) keep their original relative order rather than being shuffled.
+        List<String> leagueOrder = new ArrayList<>();
+        for (RecordedPlay play : result) {
+            if (!leagueOrder.contains(play.league())) {
+                leagueOrder.add(play.league());
+            }
+        }
+        result.sort(java.util.Comparator
+                .comparingInt((RecordedPlay p) -> leagueOrder.indexOf(p.league()))
+                .thenComparingInt(p -> inPreferredBand(p) ? 0 : 1));
+        return result;
+    }
+
+    private boolean isMoreValuable(RecordedPlay candidate, RecordedPlay current) {
+        boolean candidateInBand = inPreferredBand(candidate);
+        boolean currentInBand = inPreferredBand(current);
+        if (candidateInBand != currentInBand) {
+            return candidateInBand;
+        }
+        return candidate.gap() > current.gap();
+    }
+
+    private static boolean inPreferredBand(RecordedPlay play) {
+        return play.impliedProbabilityPercent() >= PREFERRED_BAND_LOW
+                && play.impliedProbabilityPercent() <= PREFERRED_BAND_HIGH;
+    }
+
+    /** Builds the final Discord-facing report straight from structured data — deterministic, so there's
+     *  no formatting drift, no narration to leak, and no empty "no plays for X" filler for a category
+     *  that recorded nothing (it simply isn't mentioned, which previous free-text reports always did
+     *  with several paragraphs of boilerplate per report). */
+    private String formatReport(List<RecordedPlay> plays) {
+        if (plays.isEmpty()) {
+            return "Today's value plays\n\nNo plays cleared the bar today.\n";
+        }
+        StringBuilder report = new StringBuilder("Today's value plays\n");
+        String currentLeague = null;
+        for (RecordedPlay play : plays) {
+            if (!play.league().equals(currentLeague)) {
+                report.append("\n").append(play.league()).append("\n");
+                currentLeague = play.league();
+            }
+            report.append(play.format()).append("\n\n");
+        }
+        return report.toString();
     }
 
     /**
@@ -489,21 +577,22 @@ public class ValuePlayScheduler {
 
     /**
      * Checks the task's self-reported "GAMES_CHECKED: ..." line (see {@link #VALUE_METHODOLOGY})
-     * against the games it was actually assigned, logs a warning for any assigned game that line
-     * doesn't mention, and strips the line out of the text before it's returned — it's an internal
-     * signal for this check, never meant to reach the Discord report. Logging only, by design: this
-     * doesn't block or retry anything, it just gives visibility into whether a task's "evaluate every
-     * game" instruction is actually being followed instead of trusting it blindly.
+     * against the games it was actually assigned, and logs a warning for any assigned game that line
+     * doesn't mention. Logging only, by design: this doesn't block or retry anything, it just gives
+     * visibility into whether a task's "evaluate every game" instruction is actually being followed
+     * instead of trusting it blindly. Nothing to strip anymore — the task's text response has no
+     * other content to coexist with now that plays are recorded via {@code RecordPlayTool} instead of
+     * being written out alongside this line.
      */
-    private String verifyAndStripGamesChecked(SportTask task, String result) {
-        Matcher matcher = GAMES_CHECKED_PATTERN.matcher(result);
+    private void logGamesCheckedCoverage(SportTask task, String text) {
+        Matcher matcher = GAMES_CHECKED_PATTERN.matcher(text);
         if (!matcher.find()) {
             if (!task.assignedGames().isEmpty()) {
                 log.warn("Value-play research for {} didn't report a GAMES_CHECKED line — can't verify "
                         + "it actually covered its {} assigned game(s): {}",
                         task.label(), task.assignedGames().size(), task.assignedGames());
             }
-            return result;
+            return;
         }
 
         String checkedLower = matcher.group(1).toLowerCase(Locale.ROOT);
@@ -517,8 +606,6 @@ public class ValuePlayScheduler {
             log.info("Value-play research for {} confirmed checking all {} assigned game(s)",
                     task.label(), task.assignedGames().size());
         }
-
-        return matcher.replaceFirst("").stripTrailing();
     }
 
     private void notifyUser(JDA jda, String message) {
