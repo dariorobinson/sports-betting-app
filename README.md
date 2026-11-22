@@ -24,25 +24,32 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
   autonomous run instead of requiring manual follow-up chat questions: confirmed in production twice,
   first that one call per sport reliably researched only ONE category (lines OR props, not both), then
   that even a single "player props" task bundling 5-6 stat types reliably wrote up plays for only ONE
-  of them (e.g. NBA Points) and silently never got to the rest. On top of that, every task's actual game
-  count for today is checked fresh each run — a cheap,
-  deterministic lookup with no model call
+  of them (e.g. NBA Points) and silently never got to the rest.
+
+  Each sport's full market board is fetched directly in Java — AT MOST ONCE per sport per run
   ([`ValuePlayScheduler.buildTasksForToday`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java),
-  backed by [`SportsCatalogService.listTodaysGameMatchups`](src/main/java/com/kalshi/betting/service/SportsCatalogService.java))
-  — any sport/category having an unusually busy day (more games than one task can realistically go
-  deep on) automatically gets split into a few extra sub-tasks, each scoped to a named subset of that
-  day's games, so coverage doesn't degrade on the heaviest slates. This applies uniformly to every
-  sport, including soccer — there's no special-cased clustering for any one sport; a quiet day for a
-  sport still runs its normal single task, a busy one gets however many extra sub-tasks its own game
-  count calls for (confirmed in production: a single combined soccer task, spanning all 14
-  competitions, missed a real play that a follow-up chat question then found — this dynamic splitting
-  is the general-purpose fix for that, not a soccer-only one). Each task lets
-  Claude pull every relevant market series in one call
-  ([`GetSportBoardTool`](src/main/java/com/kalshi/betting/orchestrator/tool/GetSportBoardTool.java),
-  backed by the curated [`SportMarketRegistry`](src/main/java/com/kalshi/betting/service/SportMarketRegistry.java)),
-  pull real stats from ESPN ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the
-  web for TODAY's games only (never a future day — this is a same-day research tool, not a
-  swing-trade one), and report every value play it finds by calling
+  calling [`SportsCatalogService.getSportBoard`](src/main/java/com/kalshi/betting/service/SportsCatalogService.java)
+  the same way [`GetSportBoardTool`](src/main/java/com/kalshi/betting/orchestrator/tool/GetSportBoardTool.java)
+  does) — sliced down to just the one market-type group a task cares about, and embedded directly as
+  JSON in that task's prompt. The model never calls GetSportBoardTool for these tasks at all; it isn't
+  even offered the tool. This matters for cost specifically: before this, every one of a sport's several
+  sibling tasks (e.g. NBA's 7) independently called GetSportBoardTool and each paid full Anthropic
+  input-token price for the SAME entire board — confirmed as the dominant driver of this app's API
+  cost once task count grew to one-per-market-type. One real fetch per sport per run, reused and sliced
+  for every sibling task, instead of N redundant ones. Game count for today (used to decide whether a
+  category needs splitting into sub-tasks — see below) is derived from that same already-fetched board
+  slice too, no separate lookup needed.
+
+  On a quiet day, each task just gets its one full slice; any category having an unusually busy day
+  (more games than one task can realistically go deep on) automatically splits into up to a few
+  sub-tasks, each embedding ONLY its own chunk of games — so a split task's prompt shrinks along with
+  its scope rather than staying sport-sized. This applies uniformly to every sport, including soccer —
+  no special-cased clustering for any one sport (confirmed in production: a single combined soccer
+  task, spanning all 14 competitions, missed a real play that a follow-up chat question then found —
+  this dynamic splitting is the general-purpose fix for that, not a soccer-only one). Each task pulls
+  real stats from ESPN ([`sportsdata/`](src/main/java/com/kalshi/betting/sportsdata/)) and the web for
+  TODAY's games only (never a future day — this is a same-day research tool, not a swing-trade one),
+  and reports every value play it finds by calling
   [`RecordPlayTool`](src/main/java/com/kalshi/betting/orchestrator/tool/RecordPlayTool.java) once per
   play — structured data (league, subject, market, odds, both probabilities, reasoning), not free-text
   prose. That's what lets the final assembly step be plain, free, deterministic Java instead of one or

@@ -111,14 +111,23 @@ public class OrchestratorService {
         TOOL_CLASSES = List.copyOf(all);
     }
 
-    /** {@link #VALUE_PLAY_TOOL_CLASSES} plus {@link RecordPlayTool} — used only by
-     *  {@link #chatOnceForPlays}, i.e. {@code ValuePlayScheduler}'s own research tasks. Deliberately
-     *  NOT folded into {@link #TOOL_CLASSES}: a top-level chat turn should keep answering a narrow,
-     *  one-off question in plain text as it always has, not be offered a structured "record a play"
-     *  tool that only makes sense for the scheduler's report-building pipeline. */
+    /** {@link #VALUE_PLAY_TOOL_CLASSES} minus {@link GetSportBoardTool} plus {@link RecordPlayTool} —
+     *  used only by {@link #chatOnceForPlays}, i.e. {@code ValuePlayScheduler}'s own research tasks.
+     *  {@code GetSportBoardTool} is deliberately excluded: {@code ValuePlayScheduler} now fetches each
+     *  sport's board once in Java and embeds the relevant slice directly in the task's prompt (see
+     *  {@code ValuePlayScheduler#buildTasksForToday}) instead of having every one of a sport's several
+     *  sibling tasks independently call the tool and each pay full price for the same data —
+     *  confirmed as the dominant driver of this app's Anthropic API cost once the task count grew to
+     *  one-per-market-type (e.g. 7 separate NBA tasks, each re-fetching NBA's entire board). Offering
+     *  the tool anyway would just invite the model to redundantly re-fetch data it's already been
+     *  given, defeating the whole point. Deliberately NOT folded into {@link #TOOL_CLASSES} either way:
+     *  a top-level chat turn should keep answering a narrow, one-off question in plain text as it
+     *  always has, with GetSportBoardTool available as normal, not be offered a structured "record a
+     *  play" tool that only makes sense for the scheduler's report-building pipeline. */
     public static final List<Class<?>> RECORD_PLAY_TOOL_CLASSES;
     static {
         List<Class<?>> all = new ArrayList<>(VALUE_PLAY_TOOL_CLASSES);
+        all.remove(GetSportBoardTool.class);
         all.add(RecordPlayTool.class);
         RECORD_PLAY_TOOL_CLASSES = List.copyOf(all);
     }

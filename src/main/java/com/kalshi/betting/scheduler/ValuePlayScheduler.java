@@ -3,7 +3,9 @@ package com.kalshi.betting.scheduler;
 import com.kalshi.betting.discord.DiscordMessages;
 import com.kalshi.betting.orchestrator.OrchestratorService;
 import com.kalshi.betting.orchestrator.RecordedPlay;
+import com.kalshi.betting.orchestrator.ToolServices;
 import com.kalshi.betting.service.SportsCatalogService;
+import com.kalshi.betting.web.dto.SportBoard;
 import net.dv8tion.jda.api.JDA;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,10 +15,12 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -516,52 +520,155 @@ public class ValuePlayScheduler {
         return report.toString();
     }
 
+    /** Maps each {@link CategoryTemplate#label()} to the exact {@code SportBoard.MarketGroup.marketType()}
+     *  substring it needs when slicing a sport's full board down to just what that task cares about
+     *  (see {@link #buildTasksForToday}) — empty string means "every game-line group" (Moneyline/
+     *  Spread/Point Total/Team Total), matched by {@code marketType} NOT ending in a parenthetical,
+     *  since every player-prop/game-prop label does (e.g. "Points (player prop)") and no plain
+     *  game-line label ever does — confirmed against every label {@code SportMarketRegistry} actually
+     *  produces. Using the FULL parenthetical suffix (not just e.g. "Goals") for props avoids a real
+     *  false-positive risk: "Goals" alone is also a substring of "First Goalscorer (player prop)". */
+    private static final Map<String, String> MARKET_TYPE_FILTER_BY_LABEL = buildMarketTypeFilters();
+
+    private static Map<String, String> buildMarketTypeFilters() {
+        Map<String, String> m = new LinkedHashMap<>();
+        m.put("College Football — Game Lines", "");
+        m.put("College Football — Team Touchdowns", "Team Touchdowns (game prop)");
+        m.put("College Football — Team Rushing Yards", "Team Rushing Yards (game prop)");
+        m.put("College Football — Team Receiving Yards", "Team Receiving Yards (game prop)");
+        m.put("College Football — Team Sacks", "Team Sacks (game prop)");
+        m.put("College Football — Team Interceptions", "Team Interceptions (game prop)");
+        m.put("Soccer — Game Lines", "");
+        m.put("Soccer — Anytime Goalscorer", "Anytime Goalscorer (player prop)");
+        m.put("Soccer — Both Teams to Score", "Both Teams to Score (game prop)");
+        m.put("NFL — Game Lines", "");
+        m.put("NFL — Passing Yards", "Passing Yards (player prop)");
+        m.put("NFL — Rushing Yards", "Rushing Yards (player prop)");
+        m.put("NFL — Receptions", "Receptions (player prop)");
+        m.put("NFL — Receiving Yards", "Receiving Yards (player prop)");
+        m.put("NFL — Passing Touchdowns", "Passing Touchdowns (player prop)");
+        m.put("NBA — Game Lines", "");
+        m.put("NBA — Points", "Points (player prop)");
+        m.put("NBA — Rebounds", "Rebounds (player prop)");
+        m.put("NBA — Assists", "Assists (player prop)");
+        m.put("NBA — Steals", "Steals (player prop)");
+        m.put("NBA — Blocks", "Blocks (player prop)");
+        m.put("NBA — Threes Made", "Threes Made (player prop)");
+        m.put("NCAA Men's Basketball", "");
+        m.put("NHL — Game Lines", "");
+        m.put("NHL — Goals", "Goals (player prop)");
+        m.put("NHL — Points", "Points (player prop)");
+        m.put("NHL — Assists", "Assists (player prop)");
+        m.put("NHL — Goaltender Saves", "Goaltender Saves (player prop)");
+        m.put("NHL — First Goalscorer", "First Goalscorer (player prop)");
+        m.put("NHL — Goal in First 10 Minutes", "Goal in First 10 Minutes (game prop)");
+        return Map.copyOf(m);
+    }
+
     /**
      * Turns each given {@link CategoryTemplate} into one or more {@link SportTask}s for TODAY
-     * specifically, based on how many games that sport/competition-cluster actually has today — a
-     * cheap, deterministic Java-side check ({@link SportsCatalogService#listTodaysGameMatchups}, no
-     * LLM call) run BEFORE any research starts. A quiet day (at or under
-     * {@link #GAMES_PER_TASK_THRESHOLD} games) gets exactly the one task it always got; a busy one
-     * gets split into up to {@link #MAX_SPLIT_PARTS} sub-tasks, each told to evaluate ONLY a named
-     * subset of today's games, so no single task is asked to go deep on more games than it reliably
-     * can. If the game-count lookup itself fails for a sport, fall back to a single unsplit task
-     * rather than losing that sport's research entirely for the day.
+     * specifically. Fetches each distinct sport's full {@link SportBoard} AT MOST ONCE per run (cached
+     * in {@code boardsBySport} for the rest of this call) and slices out just the one market-type
+     * group(s) a template needs, embedding that slice directly as JSON in the task's prompt — instead
+     * of every one of a sport's several sibling tasks independently calling GetSportBoardTool and each
+     * paying full price for the SAME entire board. Confirmed as the dominant driver of this app's
+     * Anthropic API cost once task count grew to one-per-market-type (e.g. 7 separate NBA tasks, each
+     * re-fetching NBA's whole board) — this is the fix: one real HTTP fetch per sport per run, zero
+     * GetSportBoardTool calls at all (it isn't even offered to these tasks, see
+     * {@link OrchestratorService#RECORD_PLAY_TOOL_CLASSES}).
+     * <p>
+     * How many games a template's own slice has (not the sport's full slate — a prop market doesn't
+     * necessarily exist for every game) decides splitting: at or under {@link #GAMES_PER_TASK_THRESHOLD}
+     * games gets the one task it always got; a busier slice gets split into up to
+     * {@link #MAX_SPLIT_PARTS} sub-tasks, each embedding ONLY its own chunk's games (not the whole
+     * slice again), so a split task's prompt shrinks along with its scope instead of staying
+     * sport-sized. If the board fetch itself fails for a sport, that sport's templates are skipped
+     * entirely for today (logged) rather than run with no data to work from.
      */
     private List<SportTask> buildTasksForToday(List<CategoryTemplate> templates) {
         List<SportTask> tasks = new ArrayList<>();
+        Map<String, SportBoard> boardsBySport = new HashMap<>();
         for (CategoryTemplate template : templates) {
-            List<String> games;
+            SportBoard board;
             try {
-                games = sportsCatalogService.listTodaysGameMatchups(template.sportKey());
+                board = boardsBySport.computeIfAbsent(template.sportKey(), sportsCatalogService::getSportBoard);
             } catch (Exception e) {
-                log.warn("Could not look up today's game count for {} ({}) — running it as a single "
-                        + "unsplit task instead of deciding how to split it.", template.sportKey(), e.getMessage());
-                tasks.add(new SportTask(template.label(), template.prompt(), List.of()));
+                log.warn("Could not fetch sport board for {} ({}) — skipping \"{}\" for today rather "
+                        + "than running it with no data.", template.sportKey(), e.getMessage(), template.label());
                 continue;
             }
 
+            String filter = MARKET_TYPE_FILTER_BY_LABEL.getOrDefault(template.label(), "");
+            List<SportBoard.MarketGroup> relevantGroups = filterMarketGroups(board.marketGroups(), filter);
+            List<String> games = relevantGroups.stream()
+                    .flatMap(g -> g.games().stream())
+                    .map(SportBoard.CompactGame::title)
+                    .distinct()
+                    .toList();
+
             if (games.size() <= GAMES_PER_TASK_THRESHOLD) {
-                tasks.add(new SportTask(template.label(), template.prompt(), games));
+                tasks.add(buildTask(template.label(), template.prompt(), board, relevantGroups, games));
                 continue;
             }
 
             int parts = Math.min(MAX_SPLIT_PARTS,
                     (int) Math.ceil(games.size() / (double) GAMES_PER_TASK_THRESHOLD));
             List<List<String>> chunks = partition(games, parts);
-            log.info("{} has {} games today — splitting into {} sub-tasks", template.sportKey(), games.size(), chunks.size());
+            log.info("{} has {} games today — splitting into {} sub-tasks", template.label(), games.size(), chunks.size());
             for (int i = 0; i < chunks.size(); i++) {
                 String label = template.label() + " (" + (i + 1) + "/" + chunks.size() + ")";
                 List<String> chunk = chunks.get(i);
-                String scopedPrompt = template.prompt() + """
-
-
-                        Today's slate for this sport/competition is unusually busy (%d games total) — \
-                        this task covers ONLY these specific games, a separate task covers the rest, so \
-                        focus your full depth on just these: %s.""".formatted(games.size(), String.join("; ", chunk));
-                tasks.add(new SportTask(label, scopedPrompt, chunk));
+                List<SportBoard.MarketGroup> chunkGroups = restrictToGames(relevantGroups, Set.copyOf(chunk));
+                tasks.add(buildTask(label, template.prompt(), board, chunkGroups, chunk));
             }
         }
         return tasks;
+    }
+
+    /** Keeps only market groups whose {@code marketType} matches {@code filter} — an exact
+     *  substring for a specific prop/game-prop label, or (empty string) every plain game-line group,
+     *  identified by NOT ending in a parenthetical (see {@link #MARKET_TYPE_FILTER_BY_LABEL}). */
+    private static List<SportBoard.MarketGroup> filterMarketGroups(List<SportBoard.MarketGroup> groups, String filter) {
+        return groups.stream()
+                .filter(g -> filter.isEmpty() ? !g.marketType().endsWith(")") : g.marketType().contains(filter))
+                .toList();
+    }
+
+    /** Restricts each group's games to just {@code gameTitles}, dropping a group entirely if none of
+     *  its games match — used when a busy-day sub-task should only see its own chunk's games, not the
+     *  whole (already market-type-filtered) slice again. */
+    private static List<SportBoard.MarketGroup> restrictToGames(List<SportBoard.MarketGroup> groups,
+                                                                  Set<String> gameTitles) {
+        List<SportBoard.MarketGroup> result = new ArrayList<>();
+        for (SportBoard.MarketGroup g : groups) {
+            List<SportBoard.CompactGame> matching = g.games().stream()
+                    .filter(game -> gameTitles.contains(game.title()))
+                    .toList();
+            if (!matching.isEmpty()) {
+                result.add(new SportBoard.MarketGroup(g.marketType(), g.seriesTicker(), g.espnSport(),
+                        g.espnLeague(), matching));
+            }
+        }
+        return result;
+    }
+
+    /** Builds one task's prompt: the template's own "Evaluate ONLY/EVERY ..." instructions (its
+     *  "Call GetSportBoardTool with sport=X" lead-in is stripped — GetSportBoardTool isn't available
+     *  for these tasks at all anymore, see {@link OrchestratorService#RECORD_PLAY_TOOL_CLASSES}) plus
+     *  the already-fetched, already-sliced board data embedded directly as JSON. Keeps the full
+     *  board's {@code teamScoringTrends}/{@code playerRecentStats}/{@code gameWeather} as-is (not
+     *  further pruned to just this slice's teams/players) — simpler, and still a small fraction of
+     *  what repeated full-board tool calls used to cost. */
+    private SportTask buildTask(String label, String templatePrompt, SportBoard fullBoard,
+                                 List<SportBoard.MarketGroup> groups, List<String> assignedGames) {
+        SportBoard sliced = new SportBoard(fullBoard.sport(), groups, fullBoard.teamScoringTrends(),
+                fullBoard.playerRecentStats(), fullBoard.gameWeather());
+        String body = templatePrompt.substring(templatePrompt.indexOf("Evaluate "));
+        String prompt = "Today's board data for this sport/category is already fetched and provided "
+                + "below as JSON — GetSportBoardTool is NOT available for this task, there's no need "
+                + "to call it (or ask for this data any other way). " + body
+                + "\n\nBOARD DATA:\n" + ToolServices.toJson(sliced);
+        return new SportTask(label, prompt, assignedGames);
     }
 
     /** Splits {@code items} into {@code numParts} contiguous, roughly-equal-sized chunks (last one
