@@ -5,6 +5,7 @@ import com.kalshi.betting.client.dto.EventData;
 import com.kalshi.betting.sportsdata.GameWeather;
 import com.kalshi.betting.sportsdata.PlayerRecentStats;
 import com.kalshi.betting.sportsdata.SportsAnalyticsService;
+import com.kalshi.betting.sportsdata.TeamInjuryReport;
 import com.kalshi.betting.sportsdata.TeamScoringTrend;
 import com.kalshi.betting.web.dto.CompactMarket;
 import com.kalshi.betting.web.dto.GameSummary;
@@ -133,8 +134,10 @@ public class SportsCatalogService {
         List<TeamScoringTrend> trends = fetchTeamScoringTrends(teamLookups);
         List<PlayerRecentStats> playerStats = fetchPlayerRecentStatsBulk(teamLookups, playerLookups);
         List<GameWeather> weather = fetchGameWeather(teamLookups);
+        List<TeamInjuryReport> injuryReports = fetchInjuryReports(teamLookups);
 
-        return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups, trends, playerStats, weather);
+        return new SportBoard(sportKey.trim().toUpperCase(Locale.ROOT), groups, trends, playerStats, weather,
+                injuryReports);
     }
 
     /** ESPN sport slugs where weather can realistically affect a game — basketball (NBA/NCAAMB) and
@@ -271,6 +274,28 @@ public class SportsCatalogService {
     }
 
     /**
+     * Bulk-fetches the current injury report for every distinct team playing today — the same
+     * "mandatory before finalizing any play" check {@code GetInjuryReportTool} does one team at a
+     * time, done once per sport instead. A team with no listed injuries is simply omitted (an empty
+     * {@code TeamInjuryReport} carries no information a reader needs — absence from this list already
+     * means "ESPN has nothing listed for them").
+     */
+    private List<TeamInjuryReport> fetchInjuryReports(List<TeamLookup> lookups) {
+        return lookups.stream().distinct().toList().parallelStream()
+                .map(lk -> {
+                    try {
+                        return sportsAnalyticsService.getInjuryReport(lk.espnSport(), lk.espnLeague(), lk.teamName());
+                    } catch (RuntimeException e) {
+                        log.warn("Sport board: injury report for {} ({}/{}) failed: {}",
+                                lk.teamName(), lk.espnSport(), lk.espnLeague(), e.getMessage());
+                        return null;
+                    }
+                })
+                .filter(r -> r != null && !r.injuries().isEmpty())
+                .toList();
+    }
+
+    /**
      * Bulk-fetches recent game-log stats for every distinct player named in a player-prop market
      * label today — so the model's prop research actually covers the whole slate instead of whichever
      * few players it happens to already recognize (confirmed in production: asked to find player prop
@@ -334,6 +359,23 @@ public class SportsCatalogService {
                     event.mutuallyExclusive(), event.strikeDate(), response.markets());
         }
         return GameSummary.from(event);
+    }
+
+    /**
+     * True if this event currently has at least one OPEN Kalshi multivariate (combo) collection that
+     * includes it — i.e. whether a user could actually combo-bet it right now. On a lookup failure,
+     * returns false (excludes the event) rather than true — this exists specifically so a value-play
+     * report never recommends something that turns out not to be combo-eligible, so a failed check
+     * should fail the same direction as a confirmed-ineligible one, not the opposite.
+     */
+    public boolean isComboEligible(String eventTicker) {
+        try {
+            return !client.listMultivariateCollectionsForEvent(eventTicker).multivariateContracts().isEmpty();
+        } catch (RuntimeException e) {
+            log.warn("Combo-eligibility check failed for {} ({}) — excluding it rather than risking a "
+                    + "non-combo-eligible play slipping through.", eventTicker, e.getMessage());
+            return false;
+        }
     }
 
     public OrderbookView getOrderbook(String marketTicker, int depth) {

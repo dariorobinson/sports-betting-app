@@ -11,10 +11,12 @@ import com.kalshi.betting.orchestrator.tool.RecordPlayTool;
  * @param playerName empty string (never null) for a team-level market (Moneyline/Spread/Point
  *                    Total/Team Total/Both Teams to Score) — only set for an individual player prop,
  *                    and used as the "one play per player, any market type" dedup key.
+ * @param eventTicker the Kalshi event this play belongs to — used to check combo eligibility
+ *                     ({@code SportsCatalogService#isComboEligible}) before the play is ever shown.
  */
 public record RecordedPlay(String league, String displaySubject, String marketType, String line,
                             String americanOdds, int impliedProbabilityPercent, int estimatedProbabilityPercent,
-                            String reasoning, String playerName) {
+                            String reasoning, String playerName, String eventTicker) {
 
     public int gap() {
         return Math.abs(estimatedProbabilityPercent - impliedProbabilityPercent);
@@ -37,13 +39,13 @@ public record RecordedPlay(String league, String displaySubject, String marketTy
      *  guarantee the model actually populated everything. */
     static RecordedPlay from(RecordPlayTool t) {
         if (isBlank(t.league) || isBlank(t.displaySubject) || isBlank(t.marketType) || isBlank(t.line)
-                || isBlank(t.americanOdds) || isBlank(t.reasoning)
+                || isBlank(t.americanOdds) || isBlank(t.reasoning) || isBlank(t.eventTicker)
                 || t.impliedProbabilityPercent == null || t.estimatedProbabilityPercent == null) {
             return null;
         }
         return new RecordedPlay(t.league.trim(), t.displaySubject.trim(), t.marketType.trim(), t.line.trim(),
                 t.americanOdds.trim(), t.impliedProbabilityPercent, t.estimatedProbabilityPercent,
-                t.reasoning.trim(), t.playerName == null ? "" : t.playerName.trim());
+                t.reasoning.trim(), t.playerName == null ? "" : t.playerName.trim(), t.eventTicker.trim());
     }
 
     private static boolean isBlank(String s) {

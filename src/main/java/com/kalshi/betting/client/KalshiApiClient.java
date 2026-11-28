@@ -71,6 +71,21 @@ public class KalshiApiClient {
         return get("/markets/" + ticker, null, false, GetMarketResponse.class);
     }
 
+    /**
+     * Open multivariate (combo) collections that currently include this event — empty means the
+     * event has no combo-eligible leg right now. Confirmed live that this is NOT a simple per-market
+     * flag: eligibility is purely "does this event_ticker appear in some currently-open collection's
+     * associated events," which varies by event, not just by market type (e.g. an NFL rushing-yards
+     * prop for one game can be combo-eligible while an NCAAF team-rushing-yards prop for a different
+     * game shows zero eligible collections) — has to be checked per event, can't be inferred.
+     */
+    public GetMultivariateCollectionsResponse listMultivariateCollectionsForEvent(String eventTicker) {
+        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+        params.add("status", "open");
+        params.add("associated_event_ticker", eventTicker);
+        return get("/multivariate_event_collections", params, false, GetMultivariateCollectionsResponse.class);
+    }
+
     // ---- Market data (authenticated per Kalshi's spec) ----
 
     public GetMarketOrderbookResponse getOrderbook(String ticker, int depth) {

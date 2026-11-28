@@ -21,8 +21,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Daily, fully autonomous "value play" research report — this app's entire remaining purpose. Does
@@ -416,28 +421,74 @@ public class ValuePlayScheduler {
      *  data instead of free-text prose that would otherwise need a second/third Anthropic call just
      *  to clean up. Shared by {@link #runResearch()} (the full daily cycle) and
      *  {@link #runResearchForSport(String)} (one sport, on demand from chat). */
+    /** How many research tasks run at once. Each task is a fully independent Claude call (its board
+     *  data is already pre-fetched and embedded — see {@link #buildTasksForToday}), so there's no
+     *  correctness reason to run them one at a time, and running 30-40+ of them sequentially (each a
+     *  real network round-trip, sometimes several for ESPN follow-up calls) is what made a full cycle
+     *  take close to an hour. Deliberately bounded rather than running every task at once: ESPN's
+     *  undocumented API has no rate limiter of its own (unlike Kalshi's — see {@code KalshiRateLimiter}),
+     *  and this app's own Anthropic usage tier has limits too, so this is a conservative starting
+     *  point for real wall-clock improvement without risking a burst of failures from either side —
+     *  raise it if it proves reliable and more speed is wanted. */
+    private static final int TASK_CONCURRENCY = 5;
+
     private String runTasks(List<SportTask> tasks) {
         List<RecordedPlay> allPlays = new ArrayList<>();
-        for (SportTask task : tasks) {
-            log.info("Value-play research starting for {}", task.label());
-            List<RecordedPlay> taskPlays;
-            try {
-                OrchestratorService.PlaysResult result = orchestratorService.chatOnceForPlays(
-                        "value-plays-" + task.label(), task.prompt() + VALUE_METHODOLOGY,
-                        OrchestratorService.RECORD_PLAY_TOOL_CLASSES);
-                taskPlays = result.plays();
-                logGamesCheckedCoverage(task, result.text());
-            } catch (Exception e) {
-                log.error("Value-play research failed for {}", task.label(), e);
-                taskPlays = List.of();
+        ExecutorService executor = Executors.newFixedThreadPool(Math.min(TASK_CONCURRENCY, Math.max(1, tasks.size())));
+        try {
+            List<Future<List<RecordedPlay>>> futures = tasks.stream()
+                    .map(task -> executor.submit(() -> runOneTask(task)))
+                    .toList();
+            for (Future<List<RecordedPlay>> future : futures) {
+                try {
+                    allPlays.addAll(future.get());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted while waiting for research tasks", e);
+                } catch (ExecutionException e) {
+                    log.error("Value-play research task threw unexpectedly", e.getCause());
+                }
             }
-            log.info("Value-play research finished for {}: {} play(s) recorded", task.label(), taskPlays.size());
-            allPlays.addAll(taskPlays);
+        } finally {
+            executor.shutdown();
         }
-        List<RecordedPlay> finalPlays = dedupeFilterSort(allPlays);
-        log.info("Combined report: {} plays recorded across all tasks, {} after dedupe/filter",
-                allPlays.size(), finalPlays.size());
+        List<RecordedPlay> comboEligible = filterComboEligible(allPlays);
+        List<RecordedPlay> finalPlays = dedupeFilterSort(comboEligible);
+        log.info("Combined report: {} plays recorded across all tasks, {} combo-eligible, {} after dedupe/filter",
+                allPlays.size(), comboEligible.size(), finalPlays.size());
         return formatReport(finalPlays);
+    }
+
+    /** Runs one task's research call and returns whatever plays it recorded — never throws, a failed
+     *  task just contributes zero plays rather than failing the whole run (same behavior as before
+     *  this was parallelized, just extracted so it can be submitted to the executor above). */
+    private List<RecordedPlay> runOneTask(SportTask task) {
+        log.info("Value-play research starting for {}", task.label());
+        try {
+            OrchestratorService.PlaysResult result = orchestratorService.chatOnceForPlays(
+                    "value-plays-" + task.label(), task.prompt() + VALUE_METHODOLOGY,
+                    OrchestratorService.RECORD_PLAY_TOOL_CLASSES);
+            logGamesCheckedCoverage(task, result.text());
+            log.info("Value-play research finished for {}: {} play(s) recorded", task.label(), result.plays().size());
+            return result.plays();
+        } catch (Exception e) {
+            log.error("Value-play research failed for {}", task.label(), e);
+            return List.of();
+        }
+    }
+
+    /** Drops any play whose event isn't currently combo-eligible on Kalshi (see
+     *  {@link SportsCatalogService#isComboEligible}) — checked once per DISTINCT event ticker (many
+     *  plays share a game), in parallel, since this is a per-event live Kalshi lookup with no bulk
+     *  equivalent. Confirmed in production: this isn't inferable from market type alone (an NFL
+     *  rushing-yards prop can be combo-eligible while an NCAAF team-rushing-yards prop for a
+     *  different game isn't), so every play's own event has to be checked, not assumed. */
+    private List<RecordedPlay> filterComboEligible(List<RecordedPlay> plays) {
+        Set<String> distinctEventTickers = plays.stream().map(RecordedPlay::eventTicker).collect(Collectors.toSet());
+        Set<String> eligible = distinctEventTickers.parallelStream()
+                .filter(sportsCatalogService::isComboEligible)
+                .collect(Collectors.toSet());
+        return plays.stream().filter(p -> eligible.contains(p.eventTicker())).toList();
     }
 
     /**
@@ -586,15 +637,15 @@ public class ValuePlayScheduler {
      * entirely for today (logged) rather than run with no data to work from.
      */
     private List<SportTask> buildTasksForToday(List<CategoryTemplate> templates) {
+        List<String> distinctSports = templates.stream().map(CategoryTemplate::sportKey).distinct().toList();
+        Map<String, SportBoard> boardsBySport = fetchBoardsInParallel(distinctSports);
+
         List<SportTask> tasks = new ArrayList<>();
-        Map<String, SportBoard> boardsBySport = new HashMap<>();
         for (CategoryTemplate template : templates) {
-            SportBoard board;
-            try {
-                board = boardsBySport.computeIfAbsent(template.sportKey(), sportsCatalogService::getSportBoard);
-            } catch (Exception e) {
-                log.warn("Could not fetch sport board for {} ({}) — skipping \"{}\" for today rather "
-                        + "than running it with no data.", template.sportKey(), e.getMessage(), template.label());
+            SportBoard board = boardsBySport.get(template.sportKey());
+            if (board == null) {
+                log.warn("No sport board available for {} — skipping \"{}\" for today rather than "
+                        + "running it with no data.", template.sportKey(), template.label());
                 continue;
             }
 
@@ -623,6 +674,36 @@ public class ValuePlayScheduler {
             }
         }
         return tasks;
+    }
+
+    /** Fetches every distinct sport's board CONCURRENTLY rather than one at a time — these are
+     *  completely independent HTTP-bound fetches (no shared state between sports), and with ~6-7
+     *  distinct sports some days, sequential fetching added real wall-clock time before any research
+     *  even started. A sport whose fetch fails is simply absent from the returned map (logged) rather
+     *  than failing the whole run. */
+    private Map<String, SportBoard> fetchBoardsInParallel(List<String> sportKeys) {
+        ExecutorService executor = Executors.newFixedThreadPool(Math.max(1, sportKeys.size()));
+        try {
+            Map<String, Future<SportBoard>> futures = new LinkedHashMap<>();
+            for (String sportKey : sportKeys) {
+                futures.put(sportKey, executor.submit(() -> sportsCatalogService.getSportBoard(sportKey)));
+            }
+            Map<String, SportBoard> boards = new HashMap<>();
+            for (Map.Entry<String, Future<SportBoard>> entry : futures.entrySet()) {
+                try {
+                    boards.put(entry.getKey(), entry.getValue().get());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted while fetching sport boards", e);
+                } catch (ExecutionException e) {
+                    log.warn("Could not fetch sport board for {} ({})", entry.getKey(),
+                            e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+                }
+            }
+            return boards;
+        } finally {
+            executor.shutdown();
+        }
     }
 
     /** Keeps only market groups whose {@code marketType} matches {@code filter} — an exact
@@ -662,11 +743,13 @@ public class ValuePlayScheduler {
     private SportTask buildTask(String label, String templatePrompt, SportBoard fullBoard,
                                  List<SportBoard.MarketGroup> groups, List<String> assignedGames) {
         SportBoard sliced = new SportBoard(fullBoard.sport(), groups, fullBoard.teamScoringTrends(),
-                fullBoard.playerRecentStats(), fullBoard.gameWeather());
+                fullBoard.playerRecentStats(), fullBoard.gameWeather(), fullBoard.injuryReports());
         String body = templatePrompt.substring(templatePrompt.indexOf("Evaluate "));
-        String prompt = "Today's board data for this sport/category is already fetched and provided "
-                + "below as JSON — GetSportBoardTool is NOT available for this task, there's no need "
-                + "to call it (or ask for this data any other way). " + body
+        String prompt = "Today's board data for this sport/category — including every team's current "
+                + "injury report (injuryReports) — is already fetched and provided below as JSON. "
+                + "GetSportBoardTool and GetInjuryReportTool are NOT available for this task, there's "
+                + "no need to call either one (or ask for this data any other way) — a team missing "
+                + "from injuryReports simply has nothing currently listed. " + body
                 + "\n\nBOARD DATA:\n" + ToolServices.toJson(sliced);
         return new SportTask(label, prompt, assignedGames);
     }

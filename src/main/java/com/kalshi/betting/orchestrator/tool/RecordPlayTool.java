@@ -51,6 +51,12 @@ public class RecordPlayTool implements Supplier<String> {
             + "recommended twice across different prop types.")
     public String playerName;
 
+    @JsonPropertyDescription("The exact eventTicker value from the board data's CompactGame entry for "
+            + "this play's game — copy it verbatim character-for-character, never guess or "
+            + "reconstruct it. Used to verify this specific play is actually combo-eligible on Kalshi "
+            + "before it's shown to the user.")
+    public String eventTicker;
+
     @Override
     public String get() {
         return "Recorded.";

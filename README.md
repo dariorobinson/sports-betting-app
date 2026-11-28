@@ -38,7 +38,10 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
   cost once task count grew to one-per-market-type. One real fetch per sport per run, reused and sliced
   for every sibling task, instead of N redundant ones. Game count for today (used to decide whether a
   category needs splitting into sub-tasks — see below) is derived from that same already-fetched board
-  slice too, no separate lookup needed.
+  slice too, no separate lookup needed. The board also bulk-carries every playing team's current
+  injury report (`injuryReports`) the same way — `GetInjuryReportTool` was "mandatory for both teams
+  before finalizing any play," which meant dozens of redundant per-team calls across a sport's sibling
+  tasks; it isn't offered to these tasks either anymore, for the same reason GetSportBoardTool isn't.
 
   On a quiet day, each task just gets its one full slice; any category having an unusually busy day
   (more games than one task can realistically go deep on) automatically splits into up to a few
@@ -55,9 +58,14 @@ Deploying to a server? See [DEPLOY.md](DEPLOY.md) (jar + systemd on EC2).
   prose. That's what lets the final assembly step be plain, free, deterministic Java instead of one or
   two more paid Anthropic calls just to clean up what the model wrote: once every task's plays are
   collected, [`ValuePlayScheduler`](src/main/java/com/kalshi/betting/scheduler/ValuePlayScheduler.java)
-  itself drops anything priced below 30% implied, collapses the same player showing up more than once
-  across different prop types down to their single most valuable play, and formats the final report —
-  no model call involved in any of that. The combined report is DMed to one pre-authorized
+  itself drops anything priced below 30% implied, drops anything whose event isn't currently
+  combo-eligible on Kalshi — checked live per event via
+  [`SportsCatalogService.isComboEligible`](src/main/java/com/kalshi/betting/service/SportsCatalogService.java),
+  since that's a real per-event fact (whether the event appears in any currently-open multivariate
+  collection), not something inferable from market type or asserted by the model — collapses the same
+  player showing up more than once across different prop types down to their single most valuable
+  play, and formats the final report — no model call involved in any of that. The combined report is
+  DMed to one pre-authorized
   Discord user. Nothing is ever placed — see [`docs/instructions.md`](src/main/resources/docs/instructions.md)
   for the exact methodology the model follows.
 - You can also just DM the bot directly any time, with three tiers of scope: a request narrower than a
